@@ -1,0 +1,62 @@
+# =============================================================================
+# GENERATED DATA — reproduced by prepare_dataset.ipynb, not version-controlled
+# =============================================================================
+# train.jsonl ~93 MB. Committing it would bake it permanently into repo
+# history and re-download it on every clone. Source data (turkish_examples/)
+# is already in the repo.
+training/data/
+
+# =============================================================================
+# TRAINING OUTPUTS — GB-scale, reproducible
+# =============================================================================
+training/outputs/
+*.gguf
+*.safetensors
+*.bin
+checkpoint-*/
+
+# =============================================================================
+# NOT YET IMPLEMENTED — comment-only skeletons, no code
+# Remove these lines one by one as each is implemented.
+# (Design rationale lives in AGENT_MIMARI_SPEC.md and CLAUDE.md.)
+# =============================================================================
+inference/
+eval/
+
+
+# =============================================================================
+# SCRATCH WORK
+# =============================================================================
+trash/
+TRY.ipynb
+
+# =============================================================================
+# INTERNAL DOCUMENTATION — stays local, never committed
+# =============================================================================
+AGENT_MIMARI_SPEC.md
+CLAUDE.md
+training/turkish_examples/README.md
+
+# =============================================================================
+# PYTHON
+# =============================================================================
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+venv/
+
+# =============================================================================
+# ENVIRONMENT & EDITOR
+# =============================================================================
+.env
+.vscode/
+.idea/
+.DS_Store
+
+# =============================================================================
+# HUGGINGFACE CACHE — in case it's ever downloaded inside the repo by mistake
+# =============================================================================
+.cache/
+hf_cache/

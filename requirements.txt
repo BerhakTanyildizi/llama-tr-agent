@@ -1,0 +1,10 @@
+# torch AYRI kurulur (CUDA sürümüne göre index gerekir):
+#   python -m pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# Sürümler SABİTLENDİ. Üst sınır konmazsa pip transformers 5.x kurar ve
+# peft ile uyumsuzluk çıkar (BloomPreTrainedModel ImportError).
+transformers==4.46.3
+peft==0.13.2
+accelerate==1.1.1
+datasets==3.1.0
+bitsandbytes>=0.44.1
