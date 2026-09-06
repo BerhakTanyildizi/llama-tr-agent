@@ -16,12 +16,13 @@ training/outputs/
 checkpoint-*/
 
 # =============================================================================
-# NOT YET IMPLEMENTED — comment-only skeletons, no code
-# Remove these lines one by one as each is implemented.
-# (Design rationale lives in AGENT_MIMARI_SPEC.md and CLAUDE.md.)
+# GENERATED / RUN OUTPUTS — reproducible, not source
 # =============================================================================
-inference/
-eval/
+# Rebuilt by `python inference/grammar/generate_gbnf.py` from the tool registry.
+# Committing it would let it drift away from the schemas it is derived from.
+inference/grammar/tool_call.gbnf
+# Per-run evaluation reports (`--out`).
+eval/sonuc_*.json
 
 
 # =============================================================================
@@ -36,6 +37,8 @@ TRY.ipynb
 AGENT_MIMARI_SPEC.md
 CLAUDE.md
 training/turkish_examples/README.md
+Llm-Terimleri.md
+training/merge_and_quantize_ACIKLAMA.md
 
 # =============================================================================
 # PYTHON

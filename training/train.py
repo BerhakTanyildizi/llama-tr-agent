@@ -130,7 +130,13 @@ def build_labels(text : str , source : str , tokenizer) -> dict | None :
 
         is_tool_call_turn = '<tool_call>' in span_text
 
-        if source == 'hermes' and not is_tool_call_turn:
+        """
+        if data line does not contain a tool call this turn is masking all data line. 
+        Because of this we are losing approximately 850 real data lines. 
+        This is a real problem because model doesn't learn how to answer without a tool call
+        We are solving this problem by inject an instruction in the model prompt
+        """
+        if source == 'hermes' and not is_tool_call_turn: 
             if not keep_english_final(text):
                 search_from = span_end
                 continue
