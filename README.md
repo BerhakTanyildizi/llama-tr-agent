@@ -69,19 +69,26 @@ ajan> Ankara'da yarın hava parçalı bulutlu olacak; sıcaklık 14 ile 26 derec
 ## 🔄 How a turn works
 
 ```mermaid
-flowchart LR
-    U([user message]) --> P[build prompt<br/>system + tools + history]
-    P --> M{{model}}
-    M -->|no tool_call| A([Turkish answer])
-    M -->|tool_call| V[validate<br/>schema + grounding]
-    V -->|invalid| O[error observation]
-    V -->|valid| D[dispatch tool]
-    D --> O2[observation]
-    O --> P
-    O2 --> P
+flowchart TD
+    U([user message]) --> P
+    P["build prompt<br/>system · tools · history<br/>+ last-moment directive"] --> M
+    M{{"model<br/>GBNF-constrained"}} -->|no tool_call| A([final answer])
+    M -->|tool_call| V{validate}
+    V -->|"malformed JSON"| O
+    V -->|"ungrounded argument"| O
+    V -->|"already called"| O["error observation"]
+    V -->|ok| D["dispatch tool"] --> O2["observation"]
+    O --> T
+    O2 --> T["trim context<br/>if over budget"]
+    T --> P
+    M -.->|"6 iterations spent"| G([forced answer])
 ```
 
-The loop is capped at 6 iterations, de-duplicates repeated calls, prunes old observations when the context budget tightens, and **never dispatches a call whose arguments cannot be traced back to the conversation**.
+Three things in that picture are the result of measurement rather than design:
+
+- **The last-moment directive** carries the answer language, the length policy and the unit rule. It sits at the *end* of the prompt, not in the system block, because the same words had no effect 1500 tokens earlier — recency is what moved the model, not wording. It is appended after the cached prefix, so the system prompt's KV cache survives.
+- **Validation has three failure branches, and none of them dispatch.** Malformed JSON, an argument that cannot be traced back to the conversation, and a call already made this turn all become observations the model reads and reacts to — the loop never crashes and never acts on invented input.
+- **The model is GBNF-constrained.** Not for style: a tool absent from the training data made it emit `"arguments"` as a bare string, and the grammar makes that shape unrepresentable.
 
 ---
 
