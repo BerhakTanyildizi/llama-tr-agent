@@ -1,21 +1,4 @@
 # -*- coding: utf-8 -*-
-
-"""Web search tool.
-
-THIS FILE'S REAL JOB IS CONTEXT BUDGET PROTECTION, NOT SEARCH (CLAUDE.md item 4).
-
-Dumping raw page text into the context overflows any VRAM budget; hardware
-tricks (q8_0 KV cache, flash attention) raise the threshold, they do not solve
-it. Trimming happens on three levels: result count, snippet length, total chars.
-
-Second decision, from measurement: AN EMPTY RESULT IS STATED IN WORDS. In eval
-I06 the model filled the silence of `{"results": []}` with invented content,
-while in I05 it relayed an explicit error message perfectly. The difference was
-that the situation was spelled out. Hence the `status` + `message` fields.
-
-Provider: DuckDuckGo (no API key). Swapping providers touches _search() only.
-"""
-
 import html
 import re
 import urllib.parse
@@ -221,7 +204,7 @@ def _ddg_lite(query: str) -> list[dict]:
     parser = _DDGParser()
     parser.feed(page)
     return [{"title": r["title"], "snippet": r["snippet"], "url": r["url"],
-             "domain": _domain(r["url"])} for r in parser.results]
+            "domain": _domain(r["url"])} for r in parser.results]
 
 
 def _wikipedia(query: str) -> list[dict]:
@@ -238,7 +221,7 @@ def _wikipedia(query: str) -> list[dict]:
         "exintro": 1, "explaintext": 1, "generator": "search",
         "gsrsearch": query, "gsrlimit": MAX_RESULTS})
     req = urllib.request.Request(f"https://{lang}.wikipedia.org/w/api.php?{q}",
-                                 headers={"User-Agent": _WIKI_AGENT})
+                                headers={"User-Agent": _WIKI_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             data = json.loads(r.read())

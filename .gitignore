@@ -21,8 +21,9 @@ checkpoint-*/
 # Rebuilt by `python inference/grammar/generate_gbnf.py` from the tool registry.
 # Committing it would let it drift away from the schemas it is derived from.
 inference/grammar/tool_call.gbnf
-# Per-run evaluation reports (`--out`).
-eval/sonuc_*.json
+# Per-run evaluation reports (`--out`). Any name, because the flag takes one:
+# sonuc_V1.json, r.json, r_grammar.json ... The test set is .jsonl and unaffected.
+eval/*.json
 
 
 # =============================================================================
@@ -39,6 +40,7 @@ CLAUDE.md
 training/turkish_examples/README.md
 Llm-Terimleri.md
 training/merge_and_quantize_ACIKLAMA.md
+parameters.md
 
 # =============================================================================
 # PYTHON

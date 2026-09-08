@@ -18,6 +18,7 @@ TEST_SET = Path(__file__).resolve().parent / "test_set.jsonl"
 # byte-identical to what the orchestrator actually sends.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from inference import prompts  # noqa: E402
+from inference.grammar import generate_gbnf  # noqa: E402
 
 VARIANTS = prompts.VARIANTS
 
@@ -34,11 +35,11 @@ def build_prompt(record: dict, variant: str) -> str:
 
 def generate(url: str, prompt: str, grammar: str | None) -> str:
     payload = {"prompt": prompt, "n_predict": 320, "temperature": 0.0,
-               "cache_prompt": True, "stop": [EOT]}
+            "cache_prompt": True, "stop": [EOT]}
     if grammar:
         payload["grammar"] = grammar
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"})
+                                headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
         return json.loads(r.read())["content"]
 
@@ -87,11 +88,11 @@ def score_args(produced: dict, expected: dict) -> list[str]:
     if_present = expected.get("if_present") or {}
     errors = [f"missing:{k}" for k in must if k not in produced]
     errors += [f"wrong:{k}={produced[k]!r}" for k, acc in must.items()
-               if k in produced and not value_matches(produced[k], acc)]
+            if k in produced and not value_matches(produced[k], acc)]
     errors += [f"wrong:{k}={produced[k]!r}" for k, acc in if_present.items()
-               if k in produced and not value_matches(produced[k], acc)]
+            if k in produced and not value_matches(produced[k], acc)]
     errors += [f"extra:{k}" for k in produced
-               if k not in must and k not in may and k not in if_present]
+            if k not in must and k not in may and k not in if_present]
     return errors
 
 
@@ -120,9 +121,9 @@ def score_record(record: dict, output: str) -> dict:
     calls, broken = extract_calls(output)
     name = calls[0]["name"] if calls else None
     result = {"id": record["id"], "category": record["category"],
-              "unseen": not record["tools_seen"], "call": name,
-              "call_count": len(calls), "broken_json": broken,
-              "strict": {}, "report": {}, "reasons": [], "output": output[:300]}
+            "unseen": not record["tools_seen"], "call": name,
+            "call_count": len(calls), "broken_json": broken,
+            "strict": {}, "report": {}, "reasons": [], "output": output[:300]}
 
     def put(field, passed, reason=""):
         (result["report"] if mode.get(field) == "report" else result["strict"])[field] = passed
@@ -142,8 +143,17 @@ def score_record(record: dict, output: str) -> dict:
         put("tool_call", name == want, f"want {want}, got {name}")
 
     if name and want not in (None, "either", "prefer_none") and "args" in exp:
-        errs = score_args(calls[0].get("arguments") or {}, exp["args"])
-        put("args", not errs, "args: " + ", ".join(errs))
+        produced = calls[0].get("arguments")
+        if produced is None:
+            produced = {}
+        if not isinstance(produced, dict):
+            # Observed: the model emitted "arguments": "17 * 23" - a string, not
+            # an object. Scoring it as a mapping iterated the characters and
+            # reported extra:1, extra:7, extra:*. Report the real defect instead.
+            put("args", False, f"arguments is a {type(produced).__name__}, not an object")
+        else:
+            errs = score_args(produced, exp["args"])
+            put("args", not errs, "args: " + ", ".join(errs))
 
     # Only meaningful when the model produced a final turn instead of a call.
     if "final_language" in exp and name is None:
@@ -151,7 +161,8 @@ def score_record(record: dict, output: str) -> dict:
         put("final_language", lang == exp["final_language"], f"language={lang}")
 
     if exp.get("must_not_fabricate_args") and calls:
-        fake = fabricated_args(calls[0].get("arguments") or {}, record["messages"])
+        fake = fabricated_args(calls[0].get("arguments") if isinstance(
+            calls[0].get("arguments"), dict) else {}, record["messages"])
         put("must_not_fabricate_args", not fake, "fabricated: " + ", ".join(fake))
 
     # Only judge argument language when the expected tool was actually called;
@@ -216,7 +227,7 @@ def print_report(results: list[dict], variant: str, grammar: bool):
     unmeasured = [r for r in results if not r["strict"]]
     if unmeasured:
         print(f"\nUNMEASURED ({len(unmeasured)}) - the model took the branch that "
-              f"carries no strict field; excluded from the score.")
+            f"carries no strict field; excluded from the score.")
         for r in unmeasured:
             print(f"  [{r['id']}] {r['category']}: call={r['call']}")
 
@@ -230,7 +241,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8080/completion")
     ap.add_argument("--variant", default=prompts.DEFAULT_VARIANT, choices=list(VARIANTS))
-    ap.add_argument("--grammar", help="GBNF file (grammar is OFF unless given)")
+    ap.add_argument("--grammar", action="store_true",
+                    help="constrain decoding with a GBNF built from EACH RECORD's tools")
     ap.add_argument("--only", help="run only ids/categories with this prefix")
     ap.add_argument("--out", help="write results as JSON")
     a = ap.parse_args()
@@ -246,24 +258,29 @@ def main():
             "    -c 8192 -np 1 -ngl 99 --device Vulkan1 -fa on \\\n"
             "    --cache-type-k q8_0 --cache-type-v q8_0 --host 127.0.0.1 --port 8080")
 
-    gbnf = Path(a.grammar).read_text(encoding="utf-8") if a.grammar else None
+
     records = [json.loads(s) for s in TEST_SET.open(encoding="utf-8") if s.strip()]
     if a.only:
         records = [r for r in records
-                   if r["id"].startswith(a.only) or r["category"].startswith(a.only)]
+                if r["id"].startswith(a.only) or r["category"].startswith(a.only)]
 
     results = []
     for i, rec in enumerate(records, 1):
+        # Built per record, not once: a fixed grammar from the production
+        # registry would forbid every unseen tool the record declares, and the
+        # model would be forced to pick a production tool instead. That scored
+        # unseen_positive at 0/11 and looked like a model failure.
+        gbnf = generate_gbnf.build(rec["tools"]) if a.grammar else None
         out = generate(a.url, build_prompt(rec, a.variant), gbnf)
         r = score_record(rec, out)
         results.append(r)
         status = "SKIP" if not r["strict"] else ("OK  " if all(r["strict"].values()) else "FAIL")
         print(f"[{i:>2}/{len(records)}] {status} {rec['id']:<5} {rec['category']}")
 
-    print_report(results, a.variant, bool(gbnf))
+    print_report(results, a.variant, a.grammar)
     if a.out:
         Path(a.out).write_text(json.dumps(
-            {"variant": a.variant, "grammar": bool(gbnf), "results": results},
+            {"variant": a.variant, "grammar": a.grammar, "results": results},
             ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\nJSON report -> {a.out}")
 

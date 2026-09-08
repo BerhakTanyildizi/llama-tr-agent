@@ -87,13 +87,17 @@ def _grounded(value: str, haystack: str) -> bool:
 
 
 class Orchestrator:
-    def __init__(self, model: serve.Model | None = None, use_grammar: bool = False,
+    def __init__(self, model: serve.Model | None = None, use_grammar: bool = True,
                 max_iterations: int = MAX_ITERATIONS, verbose: bool = False,
                 variant: str = prompts.DEFAULT_VARIANT, directive: bool = True,
                 language: str | None = prompts.DEFAULT_LANGUAGE):
         self.model = model or serve.Model()
-        # Grammar is off by default: the model produced 100% valid JSON without
-        # it in eval, so it is insurance for temperature > 0 and long contexts.
+        # Grammar is ON by default. It was off while the agent had only the three
+        # tools it was trained on, where the model produced 100% valid JSON
+        # unaided. Adding `calculate` - a tool absent from training - broke that:
+        # the model emitted "arguments": "16 * 2" as a bare string instead of an
+        # object. Measured over the whole set: JSON validity 96% -> 100%,
+        # reasoning 40% -> 100%, overall 84% -> 89%, and no category dropped.
         self.grammar = generate_gbnf.build() if use_grammar else None
         self.max_iterations = max_iterations
         self.verbose = verbose
@@ -183,6 +187,23 @@ class Orchestrator:
         self._log(f"context still over budget ({self.budget} tokens) after pruning; "
                 "consider a larger n_ctx or tighter tool-side trimming")
 
+    def _check_numbers(self, answer: str) -> None:
+        """Warn when the answer states a number no observation contained.
+
+        Advisory only, and only under --verbose. It exists because the model
+        produced "256 billion parameters" from sources that said nothing of the
+        kind, with no signal that anything was wrong. Gating on it would be
+        wrong - a legitimate calculation also yields new numbers - but seeing it
+        while debugging is the difference between catching that and not.
+        """
+        if not self.verbose:
+            return
+        seen = " ".join(m["content"] for m in self.history if m["role"] == "ipython")
+        yeni = {n for n in re.findall(r"\d[\d.,]*", answer)
+                if len(n) > 2 and n not in seen}
+        if yeni:
+            self._log(f"not in any observation: {', '.join(sorted(yeni)[:6])}")
+
     def _log(self, *a):
         if self.verbose:
             print("  ·", *a, file=sys.stderr)
@@ -200,6 +221,7 @@ class Orchestrator:
 
             if name is None and not parse_error:
                 self.history.append({"role": "assistant", "content": out})
+                self._check_numbers(out)
                 return out                                   # final answer
 
             self.history.append({"role": "assistant", "content": out})
@@ -252,7 +274,8 @@ def main() -> None:
     import argparse
     ap = argparse.ArgumentParser(description="Turkish ReAct agent (REPL)")
     ap.add_argument("--url", default=serve.DEFAULT_URL)
-    ap.add_argument("--grammar", action="store_true", help="enable GBNF constrained decoding")
+    ap.add_argument("--no-grammar", action="store_true",
+                    help="disable GBNF constrained decoding (on by default)")
     ap.add_argument("--verbose", action="store_true", help="log tool calls to stderr")
     ap.add_argument("--variant", default=prompts.DEFAULT_VARIANT, choices=list(prompts.VARIANTS),
                     help="system prompt variant")
@@ -261,7 +284,7 @@ def main() -> None:
     a = ap.parse_args()
 
     try:
-        agent = Orchestrator(serve.Model(a.url), use_grammar=a.grammar,
+        agent = Orchestrator(serve.Model(a.url), use_grammar=not a.no_grammar,
                             verbose=a.verbose, variant=a.variant)
     except serve.ServerUnavailable as e:
         raise SystemExit(str(e))

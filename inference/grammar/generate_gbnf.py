@@ -15,9 +15,18 @@ Requiredness could have been encoded here, but every combination of optional
 parameters would need its own branch (2^n for n optional params), making the
 output unreadable. That check already runs in tools.validate() before dispatch.
 
-NOTE: in eval the model produced 100% valid JSON with the grammar OFF. So this
-layer is INSURANCE, not a necessity: it earns its keep once temperature rises
-above zero and contexts get longer.
+NOTE: this layer WAS optional and is no longer. With only the three trained
+tools the model produced 100% valid JSON unaided. Adding `calculate`, a tool
+that was never in the training data, broke that - it emitted
+`"arguments": "16 * 2"`, a bare string where an object belongs, and sometimes a
+stray closing brace with it. Measured across the full set, the grammar takes
+JSON validity from 96% to 100% and the reasoning category from 40% to 100%.
+
+The grammar must be built from the tools of the CALL SITE, not from the global
+registry. Building it once from the registry forbids every tool a caller
+declares that production does not have, and the model is then forced to pick a
+production tool instead - which scored 0/11 on unseen schemas and looked exactly
+like a model failure.
 """
 from pathlib import Path
 import sys
@@ -80,7 +89,16 @@ def build(schemas: list[dict] | None = None) -> str:
         rules.append(
             f'{call} ::= "{{\\"name\\": \\"{tool}\\", \\"arguments\\": {{" ws {kv}? ws "}}}}"')
 
-    root = ('root ::= "<tool_call>" ws-nl call ws-nl "</tool_call>"\n'
+    # The root MUST allow a plain answer as well as a call. An earlier version
+    # only accepted "<tool_call>...", which forced a tool call on every single
+    # generation - measured: with the grammar on, the negative-control record
+    # (a question needing no tool) failed because a call was unavoidable.
+    # The two branches are decidable from the first character: a call starts
+    # with '<', prose never contains one. Repetition is allowed because the
+    # system prompt says "one or more functions" and two records need two calls.
+    root = ('root ::= tool-call (ws-nl tool-call)* | prose\n'
+            'tool-call ::= "<tool_call>" ws-nl call ws-nl "</tool_call>"\n'
+            'prose ::= [^<]+\n'
             'ws-nl ::= [ \\t\\n]*\n'
             "call ::= " + " | ".join(call_rules))
     return "\n".join([root, "", *rules, "", BASE]) + "\n"

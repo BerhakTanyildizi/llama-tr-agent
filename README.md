@@ -11,14 +11,16 @@
   <img src="https://img.shields.io/badge/runtime-llama.cpp%20(Vulkan)-brightgreen?style=flat-square" alt="runtime">
   <img src="https://img.shields.io/badge/VRAM-5.0%20%2F%208%20GB-success?style=flat-square" alt="vram">
   <img src="https://img.shields.io/badge/deps-stdlib%20only-lightgrey?style=flat-square" alt="dependencies">
+  <img src="https://img.shields.io/badge/tools-4-blueviolet?style=flat-square" alt="tools">
+  <img src="https://img.shields.io/badge/decoding-GBNF%20constrained-informational?style=flat-square" alt="decoding">
 </p>
 
 <table>
 <tr>
-<td align="center"><b>94%</b><br><sub>on tool schemas<br>never seen in training</sub></td>
-<td align="center"><b>100%</b><br><sub>valid JSON<br>with grammar off</sub></td>
+<td align="center"><b>95%</b><br><sub>on tool schemas<br>never seen in training</sub></td>
+<td align="center"><b>100%</b><br><sub>valid JSON<br>tool calls</sub></td>
 <td align="center"><b>~40</b><br><sub>tokens/sec<br>generation</sub></td>
-<td align="center"><b>2%</b><br><sub>Turkish share of<br>the training mix</sub></td>
+<td align="center"><b>79</b><br><sub>held-out records,<br>hand written</sub></td>
 </tr>
 </table>
 
@@ -58,7 +60,9 @@ ajan> Ankara'da yarın hava parçalı bulutlu olacak; sıcaklık 14 ile 26 derec
       arasında seyredecek ve yağış ihtimali görünmüyor. …
 ```
 
-<sub>`--verbose` logs each tool call and its outcome · `--variant` picks a system prompt · `--grammar` enables constrained decoding</sub>
+<sub>`--verbose` logs each tool call and its outcome · `--variant` picks a system prompt · `--lang` forces the answer language · `--no-grammar` disables constrained decoding</sub>
+
+> ⚠️ **Turkish output is currently suspended** (`DEFAULT_LANGUAGE = "en"`). Every defect still open has the same shape — *works in English, fails in Turkish* — so the language variable is pinned while the English baseline is measured. `--lang tr` or `--lang auto` restores it.
 
 ---
 
@@ -93,22 +97,49 @@ The loop is capped at 6 iterations, de-duplicates repeated calls, prunes old obs
 
 ---
 
+## 🧰 Tools
+
+| tool | what it does | the interesting part |
+|---|---|---|
+| 🔎 `google_search` | Web search | Provider chain **Tavily → DuckDuckGo → Wikipedia** with bot-challenge detection. Three trimming layers; `num_results` is a **floor**, not a ceiling. |
+| 🌤️ `get_weather` | Current + forecast | `days_ahead` (0–7). Resolves diacritic-free city names (`Elazig` → `Elâzığ`) and prefers the most populous match. |
+| 🕐 `get_system_time` | Date and time | IANA timezone inference from a city name. |
+| 🧮 `calculate` | Arithmetic | AST-based, **never `eval()`**. Takes a `unit` so a bare number cannot pass as an answer. |
+
+`tools/__init__.py` is the hub: the system prompt, the grammar and the dispatcher all read the same registry, so one can never be updated while another is forgotten. Adding a tool is one file plus one list entry — the grammar regenerates itself.
+
+---
+
 ## 📊 Evaluation
 
-`eval/test_set.jsonl` is a **74-record held-out set, written by hand**. It was screened against the training data for verbatim matches and at a 0.70 similarity threshold — five real leaks were found and rewritten. Every tool name claimed as "unseen" was checked against all **2,985** tool names in the training data; intuitive picks like `convert_currency`, `translate_text` and `find_restaurants` turned out to be present and were replaced.
+`eval/test_set.jsonl` is a **79-record held-out set, written by hand**. It was screened against the training data for verbatim matches and at a 0.70 similarity threshold — five real leaks were found and rewritten. Every tool name claimed as "unseen" was checked against all **2,985** tool names in the training data; intuitive picks like `convert_currency`, `translate_text` and `find_restaurants` turned out to be present and were replaced.
 
-Scored with the **grammar off**, so the numbers reflect what the model produces unaided:
+Scored on the full set with the **grammar on**, which is how the agent runs:
 
 | Metric | Score | |
 |---|---|---|
-| 🔓 **Unseen tool schemas** | **18/19** | `██████████ 94%` |
-| 🔑 Seen tool schemas | 41/44 | `█████████░ 93%` |
-| ✅ JSON validity | 40/40 | `██████████ 100%` |
+| 🔓 **Unseen tool schemas** | **23/24** | `██████████ 95%` |
+| 🔑 Seen tool schemas | 44/51 | `█████████░ 86%` |
+| ✅ JSON validity | 54/54 | `██████████ 100%` |
+| 🧮 Arithmetic routed to a tool | 5/5 | `██████████ 100%` |
 | 🗣️ Turkish final turn after an observation | 6/6 | `██████████ 100%` |
 
 > **The first two rows are the whole point.** Equal performance on schemas the model has never seen means it learned *"read the schema, build the call"* rather than memorizing tool names.
 
 Records where more than one behaviour is defensible are **reported, not scored**. Inventing a reference answer to make a metric look complete would have made the metric worse.
+
+### Grammar: off vs on
+
+The same 79 records, the same prompt, one flag apart:
+
+| | grammar off | grammar on |
+|---|---|---|
+| Overall | 63/75 · 84% | **67/75 · 89%** |
+| Unseen tool schemas | 20/24 · 83% | **23/24 · 95%** |
+| JSON validity | 52/54 · 96% | **54/54 · 100%** |
+| Arithmetic routed to a tool | 2/5 · 40% | **5/5 · 100%** |
+
+No category regressed, so the grammar is on by default.
 
 ---
 
@@ -141,6 +172,26 @@ DuckDuckGo answers **HTTP 202 with a CAPTCHA** after ~7 requests on `/lite` and 
 </details>
 
 <details>
+<summary><b>🧮 Arithmetic was wrong, and the error propagated</b></summary>
+
+Asked how much memory FP16 weights need in INT4, the model answered *"1 FP16 = 2 INT4, so 32 GB"* — the ratio is 4, the operation is division, the answer is 4 GB. The next turn then **reused that wrong ratio as a premise** and produced *"256 billion 7B parameters fit in 32 GB"*. A wrong answer sat in the history as fact and became the foundation of the next one; nothing in the loop caught it.
+
+`calculate` moves the arithmetic into code. It parses the expression to an AST and evaluates only whitelisted node types — `eval()` is never called, so no `tool_call` can execute anything.
+
+**Half-solved, honestly.** The arithmetic is now exact, but the model still builds unit-inconsistent expressions: it once computed `32*1024/16` for a question whose answer is ~17 billion. The `unit` parameter and the byte constants in the schema description push back, and the directive makes it write the units out before calculating — but writing *"1 GB = 1024³ bytes"* and then using `10⁹` in the next line still happens. Prompting shapes the form; only an interface change would force the substance.
+</details>
+
+<details>
+<summary><b>🔒 The grammar had three traps, all of which looked like model failures</b></summary>
+
+1. The root accepted **only** `<tool_call>`, so a plain answer was impossible — every question was forced into a tool call.
+2. The eval read the grammar from a **fixed file**, which restricted every record to production's tools. Records built on unseen schemas could not select them and scored **0/11**. The grammar must be built from the **call site's** tool bundle.
+3. It permitted exactly one call, so multi-call records scored 0/2.
+
+All three were harness bugs, and all three showed up in the report as if the model had failed.
+</details>
+
+<details>
 <summary><b>✂️ Short answers are a learned length</b></summary>
 
 Turkish final turns in the training data have a **median of 118 characters**. A length instruction in the system prompt barely moved it; the same instruction rendered *immediately before generation* does — recency is what matters, not wording.
@@ -163,10 +214,13 @@ inference/
   serve.py                  # HTTP client to llama-server (model access layer)
   orchestrator.py           # ReAct loop: parsing, grounding, pruning, limits
   grammar/generate_gbnf.py  # GBNF generated from the live tool registry
-  tools/                    # Registry + google_search, get_weather, get_system_time
+  tools/                    # Registry + google_search, get_weather,
+                            #            get_system_time, calculate
 
 eval/
-  test_set.jsonl            # 74-record held-out set, 19 of them on unseen schemas
+  test_set.jsonl            # 79-record held-out set, 24 of them on unseen schemas
+  validate_test_set.py      # structural checks - run after every edit
+  test_set_SEMA.md          # record schema and scoring rules
   test_set_SEMA.md          # Record schema and scoring rules
   eval_post_quant.py        # Scores the quantized model against the set
   eval_pre_quant.py         # bfloat16 baseline (not run — see Status)
@@ -238,22 +292,26 @@ Adding another provider means writing **one function** and listing it in `PROVID
 | Dataset preparation (Hermes + Turkish subset) | ✅ Done |
 | QLoRA training script | ✅ Done |
 | LoRA merge / GGUF quantization pipeline | ✅ Done, validated end-to-end |
-| Tool layer + registry | ✅ Done |
-| GBNF grammar generation | ✅ Done *(optional — see below)* |
+| Tool layer + registry (4 tools) | ✅ Done |
+| Arithmetic tool (`calculate`) | ✅ Done *(units partly solved — see above)* |
+| GBNF grammar generation | ✅ Done *(now on by default — see below)* |
 | Inference server & ReAct orchestrator | ✅ Done |
 | Evaluation harness | ✅ Done |
 | bfloat16 baseline comparison | ❌ **Not possible** — the merged bf16 model was deleted by the quantize pipeline before a baseline was taken |
 
-The grammar layer is **insurance, not a requirement**: the model produced 100% valid JSON with it switched off. It earns its keep once temperature rises above zero and contexts grow.
+The grammar layer **started as insurance and became a requirement**. With only the three tools it was trained on, the model produced 100% valid JSON unaided. Adding `calculate` — a tool absent from the training data — broke that: it emitted `"arguments": "16 * 2"`, a bare string where an object belongs. Measured across the full set, the grammar takes JSON validity from 96% to 100% and the reasoning category from 40% to 100%, with no category regressing. It is on by default; `--no-grammar` turns it off.
+
+One constraint that is easy to get wrong: the grammar must be built from **the tools of the call site**, not from the global registry. Building it once from the registry forbids every tool a caller declares that production does not have — the model is then forced to pick a production tool instead, which scored 0/11 on unseen schemas and looked exactly like a model failure.
 
 ---
 
 ## 🛠️ Commands
 
 ```bash
-python inference/orchestrator.py --verbose            # interactive agent
-python eval/eval_post_quant.py --out eval/report.json # score against the test set
-python inference/grammar/generate_gbnf.py             # regenerate the grammar
+python inference/orchestrator.py --verbose             # interactive agent
+python eval/eval_post_quant.py --grammar --out r.json  # score against the test set
+python eval/validate_test_set.py                       # check the test set itself
+python inference/grammar/generate_gbnf.py              # inspect the generated grammar
 ```
 
 Training and merge/quantize scripts run independently — see the comment block at the top of each script for hardware assumptions and expected runtimes.

@@ -10,9 +10,9 @@ never be updated while another is forgotten:
 Adding a tool: write the module (SCHEMA + GROUNDED_PARAMS + run), append it to
 MODULES. Nothing else changes.
 """
-from . import get_system_time, get_weather, google_search
+from . import calculate, get_system_time, get_weather, google_search
 
-MODULES = [google_search, get_weather, get_system_time]
+MODULES = [google_search, get_weather, get_system_time, calculate]
 
 REGISTRY = {m.SCHEMA["function"]["name"]: m for m in MODULES}
 SCHEMAS = [m.SCHEMA for m in MODULES]

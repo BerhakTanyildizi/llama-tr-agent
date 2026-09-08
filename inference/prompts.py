@@ -141,13 +141,27 @@ DIRECTIVES = {
            "kavramı açıkla, nedenini ver, somut bir örnek ekle. Selamlaşma, "
            "onay ya da sohbet cümlelerine kısa karşılık ver. Kullanıcı kısa "
            "konuşmanı istediyse KISA konuş - bu talimat onun isteğini geçersiz "
-           "kılmaz."),
+           "kılmaz. Sorudaki her kısıta harfiyen uy: istenen ton, istenen madde "
+           "sayısı, istenen ayrıntı düzeyi. "
+           "SAYILAR: hesaplamadan ÖNCE birimleri ayrı bir satıra yaz - örneğin "
+           "'1 GB = 1024**3 bayt; FP16 = değer başına 2 bayt' - sonra calculate "
+           "aracını o birimlerdeki ifadeyle çağır ve sonucun neyi saydığını "
+           "söyle. Birimsiz sayı cevap değildir. Önceki turda söylediğin bir "
+           "sayıyı doğrulanmış kabul etme, yeniden hesapla."),
     "en": ("Write your answer now. LANGUAGE: English. "
            "LENGTH: match the depth to the question. When you are asked to "
            "explain something, explain it, give the reason behind it and add a "
            "concrete example. Answer greetings, acknowledgements and small talk "
            "briefly. If the user has asked you to be shorter, BE SHORTER - this "
-           "instruction does not override them."),
+           "instruction does not override them. "
+           "Follow every constraint in the question literally: a requested tone, "
+           "a requested number of items, a requested level of detail. "
+           "NUMBERS: before calculating anything, first write the units on their "
+           "own line - for example '1 GB = 1024**3 bytes; FP16 = 2 bytes per "
+           "value' - then call the calculate tool with an expression in those "
+           "units and say what the result counts. A bare number with no unit is "
+           "not an answer. Never treat a number you stated in an earlier turn as "
+           "verified; recompute it."),
 }
 
 
@@ -158,9 +172,9 @@ DIRECTIVES = {
 # Deliberately narrow patterns: "İngilizce nasıl öğrenilir?" is a question ABOUT
 # English, not a request to answer in it.
 _ASK_EN = re.compile(r"\bin english\b|\bspeak english\b"
-                     r"|\bingilizce (olarak )?(cevap|yaz|anlat|konus|soyle)", re.I)
+                    r"|\bingilizce (olarak )?(cevap|yaz|anlat|konus|soyle)", re.I)
 _ASK_TR = re.compile(r"\bin turkish\b|\bspeak turkish\b"
-                     r"|\bturkce (olarak )?(cevap|yaz|anlat|konus|soyle)", re.I)
+                    r"|\bturkce (olarak )?(cevap|yaz|anlat|konus|soyle)", re.I)
 _FOLD = str.maketrans("ıİğĞşŞçÇöÖüÜ", "iigGsScCoOuU")
 
 
