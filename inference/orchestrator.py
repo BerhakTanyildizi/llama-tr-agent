@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""ReAct loop: user message -> tool calls -> observations -> Turkish answer.
+"""ReAct loop: user message -> tool calls -> observations -> final answer.
 
     user message
         |
         v  build_prompt -> model.generate
         |
-        +-- no <tool_call> --> TURKISH FINAL ANSWER, done
+        +-- no <tool_call> --> FINAL ANSWER, done
         |
         +-- <tool_call> --> validate --> dispatch --> observation --> loop
 
@@ -56,8 +56,12 @@ PLACEHOLDER_RE = re.compile(
 MAX_ITERATIONS = 6
 CONTEXT_BUDGET = 0.70      # of n_ctx; the rest is left for generation
 PRUNED_NOTE = "Earlier result removed to save context."
-GIVE_UP = ("Bu isteği tamamlayamadım. Sorunu biraz daha açık yazarsan "
-        "yeniden deneyebilirim.")
+# Language-aware: the loop can now run in English, and a Turkish fallback in an
+# English conversation reads as a crash.
+GIVE_UP = {
+    "en": "I could not complete that request. Rephrasing it a little may help.",
+    "tr": "Bu isteği tamamlayamadım. Sorunu biraz daha açık yazarsan yeniden deneyebilirim.",
+}
 
 
 # Turkish diacritics are folded before comparison. Without this the guard fires
@@ -85,7 +89,8 @@ def _grounded(value: str, haystack: str) -> bool:
 class Orchestrator:
     def __init__(self, model: serve.Model | None = None, use_grammar: bool = False,
                 max_iterations: int = MAX_ITERATIONS, verbose: bool = False,
-                variant: str = prompts.DEFAULT_VARIANT, directive: bool = True):
+                variant: str = prompts.DEFAULT_VARIANT, directive: bool = True,
+                language: str | None = prompts.DEFAULT_LANGUAGE):
         self.model = model or serve.Model()
         # Grammar is off by default: the model produced 100% valid JSON without
         # it in eval, so it is insurance for temperature > 0 and long contexts.
@@ -95,6 +100,7 @@ class Orchestrator:
         self.budget = int(self.model.n_ctx * CONTEXT_BUDGET)
         self.system = prompts.system_prompt(tools.SCHEMAS, variant)
         self.directive = directive
+        self.language = language
         self.history: list[dict] = []
 
     # -- prompt ------------------------------------------------------------
@@ -108,7 +114,7 @@ class Orchestrator:
         # whole point (see prompts.final_directive). It is appended after the
         # cached prefix, so the system prompt's KV cache is untouched.
         if self.directive:
-            p += HEADER.format("system") + prompts.final_directive(messages) + EOT
+            p += HEADER.format("system") + prompts.final_directive(messages, self.language) + EOT
         return p + HEADER.format("assistant")   # left open: the model speaks next
 
     @staticmethod
@@ -194,7 +200,7 @@ class Orchestrator:
 
             if name is None and not parse_error:
                 self.history.append({"role": "assistant", "content": out})
-                return out                                   # Turkish final answer
+                return out                                   # final answer
 
             self.history.append({"role": "assistant", "content": out})
 
@@ -234,7 +240,7 @@ class Orchestrator:
         # Budget exhausted and still calling tools: one forced final answer.
         out = self.model.generate(self.build_prompt(self.history), stop=[EOT])["text"].strip()
         if self.extract_call(out)[0]:
-            out = GIVE_UP
+            out = GIVE_UP.get(self.language or "en", GIVE_UP["en"])
         self.history.append({"role": "assistant", "content": out})
         return out
 
@@ -250,6 +256,8 @@ def main() -> None:
     ap.add_argument("--verbose", action="store_true", help="log tool calls to stderr")
     ap.add_argument("--variant", default=prompts.DEFAULT_VARIANT, choices=list(prompts.VARIANTS),
                     help="system prompt variant")
+    ap.add_argument("--lang", default=prompts.DEFAULT_LANGUAGE or "auto", choices=["en", "tr", "auto"],
+                    help="answer language; 'auto' mirrors the user (Turkish is suspended by default)")
     a = ap.parse_args()
 
     try:
@@ -259,7 +267,7 @@ def main() -> None:
         raise SystemExit(str(e))
 
     print(f"n_ctx={agent.model.n_ctx}  context budget={agent.budget} tokens  "
-        f"grammar={'on' if agent.grammar else 'off'}  prompt={a.variant}")
+        f"grammar={'on' if agent.grammar else 'off'}  prompt={a.variant}  lang={a.lang}")
     print("Sorunuzu yazın (çıkmak için Ctrl+D, geçmişi silmek için /reset).\n")
     while True:
         try:

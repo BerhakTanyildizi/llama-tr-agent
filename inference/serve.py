@@ -62,7 +62,7 @@ class Model:
     def generate(self, prompt: str, max_tokens: int = 768, grammar: str | None = None,
                 stop: list[str] | None = None, temperature: float = 0.5,
                 top_k: int = 40, top_p: float = 0.9,
-                repeat_penalty: float = 1.1, repeat_last_n: int = 256) -> dict:
+                repeat_penalty: float = 1.1, repeat_last_n: int = 768) -> dict:
         """Sampling defaults are for CHAT, not for measurement.
 
         At temperature 0 the agent locked into repeating one sentence verbatim

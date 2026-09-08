@@ -113,24 +113,41 @@ _EN_WORDS = ("the", "and", "is", "are", "of", "to", "in", "that", "with",
              "for", "you", "your", "what", "how", "explain", "search")
 
 
-def detect_language(text: str) -> str:
-    """'tr' or 'en'. Deliberately crude: only used to pick a directive."""
+def detect_language(text: str) -> str | None:
+    """'tr', 'en', or None when there is no signal either way.
+
+    Returning None matters. The old version fell back to "tr" on a tie, so
+    "Yes" and "Just shut up" inside an all-English conversation were each
+    handed a Turkish directive and the agent flip-flopped mid-thread.
+    """
     low = text.lower()
     words = set(low.replace("?", " ").replace(",", " ").split())
     tr = sum(c in _TR_CHARS for c in text) + len(words & set(_TR_WORDS))
     en = len(words & set(_EN_WORDS))
+    if tr == en:
+        return None
     return "en" if en > tr else "tr"
 
 
+# The length clause used to read "at least 5-8 full sentences ... a one or two
+# sentence answer is not acceptable", unconditionally, on every turn. Because
+# this directive sits closest to the generation point it WON - including over
+# the user. Observed live: "Hi what a beauty day" drew a nine-sentence essay,
+# and "You don't need to talk at length about everything" drew the same essay
+# again. Depth is now proportional, and an explicit request for brevity wins.
 DIRECTIVES = {
-    "tr": ("Cevabını şimdi yaz. DİL: Türkçe. UZUNLUK: en az 5-8 tam cümle. "
-           "Kavramı açıkla, arkasındaki nedeni veya mekanizmayı ver, işe "
-           "yarayan somut bir örnek ekle. Tek iki cümlelik yüzeysel cevap "
-           "kabul edilmez."),
-    "en": ("Write your answer now. LANGUAGE: English. LENGTH: at least 5-8 "
-           "full sentences. Explain the concept, give the reason or mechanism "
-           "behind it, and add a concrete example. A one or two sentence "
-           "answer is not acceptable."),
+    "tr": ("Cevabını şimdi yaz. DİL: Türkçe. "
+           "UZUNLUK: derinliği soruya göre ayarla. Açıklama istenen bir soruda "
+           "kavramı açıkla, nedenini ver, somut bir örnek ekle. Selamlaşma, "
+           "onay ya da sohbet cümlelerine kısa karşılık ver. Kullanıcı kısa "
+           "konuşmanı istediyse KISA konuş - bu talimat onun isteğini geçersiz "
+           "kılmaz."),
+    "en": ("Write your answer now. LANGUAGE: English. "
+           "LENGTH: match the depth to the question. When you are asked to "
+           "explain something, explain it, give the reason behind it and add a "
+           "concrete example. Answer greetings, acknowledgements and small talk "
+           "briefly. If the user has asked you to be shorter, BE SHORTER - this "
+           "instruction does not override them."),
 }
 
 
@@ -160,10 +177,31 @@ def language_preference(messages: list[dict]) -> str | None:
     return None
 
 
-def final_directive(messages: list[dict]) -> str:
-    """Explicit request if the user made one, otherwise mirror the last message."""
-    lang = language_preference(messages)
+# TURKISH IS CURRENTLY SUSPENDED (DEFAULT_LANGUAGE = "en").
+# The agent is being validated in English first: every remaining defect found so
+# far has been of the form "works in English, fails in Turkish" - days_ahead
+# extraction from "yarın", explicit language requests, search query language.
+# Isolating the language variable makes the English baseline measurable before
+# Turkish is layered back on. Set DEFAULT_LANGUAGE = None to restore mirroring,
+# or pass --lang tr / --lang auto.
+DEFAULT_LANGUAGE: str | None = "en"
+
+
+def final_directive(messages: list[dict], force: str | None = None) -> str:
+    """Pick the answer language, then return the directive for it.
+
+    Precedence: forced mode > explicit user request > detected language of the
+    last user message > the language of the most recent message that HAD a
+    signal > "en". The walk backwards is what stops a bare "Yes" from resetting
+    the language mid-conversation.
+    """
+    lang = force or DEFAULT_LANGUAGE
     if lang is None:
-        son = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-        lang = detect_language(son)
-    return DIRECTIVES[lang]
+        lang = language_preference(messages)
+    if lang is None:
+        for m in reversed(messages):
+            if m["role"] == "user":
+                lang = detect_language(m["content"])
+                if lang:
+                    break
+    return DIRECTIVES[lang or "en"]
