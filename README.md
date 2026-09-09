@@ -62,7 +62,7 @@ ajan> Ankara'da yarın hava parçalı bulutlu olacak; sıcaklık 14 ile 26 derec
 
 <sub>`--verbose` logs each tool call and its outcome · `--variant` picks a system prompt · `--lang` forces the answer language · `--no-grammar` disables constrained decoding</sub>
 
-> ⚠️ **Turkish output is currently suspended** (`DEFAULT_LANGUAGE = "en"`). Every defect still open has the same shape — *works in English, fails in Turkish* — so the language variable is pinned while the English baseline is measured. `--lang tr` or `--lang auto` restores it.
+> ⚠️ **The agent runs in English right now** (`DEFAULT_LANGUAGE = "en"`). Every defect still open has the same shape — *works in English, fails in Turkish* — so the language variable is pinned while the English baseline is measured. At this setting the prompt does not mention Turkish at all: the system prompt's language clause follows the configured language rather than naming both, so it can no longer contradict the directive. Turkish stays one flag away — `--lang tr` pins it, `--lang auto` mirrors the user.
 
 ---
 
@@ -82,6 +82,17 @@ flowchart TD
     O2 --> T["trim context<br/>if over budget"]
     T --> P
     M -.->|"6 iterations spent"| G([forced answer])
+
+    classDef io fill:#1f6feb,stroke:#1f6feb,color:#ffffff
+    classDef good fill:#238636,stroke:#238636,color:#ffffff
+    classDef warn fill:#9e6a03,stroke:#9e6a03,color:#ffffff
+    classDef err fill:#a40e26,stroke:#a40e26,color:#ffffff
+    classDef step fill:#30363d,stroke:#6e7681,color:#ffffff
+    class U io
+    class A good
+    class G warn
+    class O err
+    class P,M,V,D,O2,T step
 ```
 
 Three things in that picture are the result of measurement rather than design:
@@ -228,7 +239,6 @@ eval/
   test_set.jsonl            # 79-record held-out set, 24 of them on unseen schemas
   validate_test_set.py      # structural checks - run after every edit
   test_set_SEMA.md          # record schema and scoring rules
-  test_set_SEMA.md          # Record schema and scoring rules
   eval_post_quant.py        # Scores the quantized model against the set
   eval_pre_quant.py         # bfloat16 baseline (not run — see Status)
 ```

@@ -92,16 +92,16 @@ def run(location: str, unit: str = "celsius", days_ahead: int = 0) -> dict:
     temp_unit = "fahrenheit" if str(unit).lower().startswith("f") else "celsius"
 
     try:
-        gun = int(days_ahead or 0)
+        day = int(days_ahead or 0)
     except (TypeError, ValueError):
         return {"error": "invalid_days_ahead",
                 "message": f"days_ahead must be a whole number, got {days_ahead!r}."}
-    if not 0 <= gun <= MAX_DAYS_AHEAD:
+    if not 0 <= day <= MAX_DAYS_AHEAD:
         # Refused rather than clamped: silently answering about a different day
         # than the user asked about is worse than saying it cannot be done.
         return {"error": "day_out_of_range",
                 "message": (f"Forecasts are available for today up to {MAX_DAYS_AHEAD} "
-                            f"days ahead; {gun} was requested.")}
+                            f"days ahead; {day} was requested.")}
 
     try:
         place = _resolve(location)
@@ -111,34 +111,34 @@ def run(location: str, unit: str = "celsius", days_ahead: int = 0) -> dict:
 
         params = {"latitude": place["latitude"], "longitude": place["longitude"],
                   "temperature_unit": temp_unit, "timezone": "auto"}
-        if gun == 0:
+        if day == 0:
             params["current"] = "temperature_2m,relative_humidity_2m,weather_code"
         else:
             params["daily"] = ("temperature_2m_max,temperature_2m_min,weather_code,"
                                "precipitation_probability_max")
-            params["forecast_days"] = gun + 1
+            params["forecast_days"] = day + 1
         data = _fetch("https://api.open-meteo.com/v1/forecast?"
                       + urllib.parse.urlencode(params))
     except Exception as e:
         return {"error": "provider_unavailable", "message": str(e)[:120]}
 
-    ortak = {"location": place["name"], "country": place.get("country", ""),
+    common = {"location": place["name"], "country": place.get("country", ""),
              "unit": temp_unit}
 
-    if gun == 0:
+    if day == 0:
         cur = data["current"]
-        return {**ortak, "when": "now",
+        return {**common, "when": "now",
                 "temperature": cur["temperature_2m"],
                 "humidity_percent": cur["relative_humidity_2m"],
                 "condition": WMO.get(cur["weather_code"], "unknown")}
 
     d = data["daily"]
-    if gun >= len(d["time"]):
+    if day >= len(d["time"]):
         return {"error": "day_unavailable",
-                "message": f"The provider returned no forecast for day +{gun}."}
-    return {**ortak, "when": f"+{gun} day(s)", "date": d["time"][gun],
-            "days_ahead": gun,
-            "temperature_min": d["temperature_2m_min"][gun],
-            "temperature_max": d["temperature_2m_max"][gun],
-            "precipitation_probability_percent": d["precipitation_probability_max"][gun],
-            "condition": WMO.get(d["weather_code"][gun], "unknown")}
+                "message": f"The provider returned no forecast for day +{day}."}
+    return {**common, "when": f"+{day} day(s)", "date": d["time"][day],
+            "days_ahead": day,
+            "temperature_min": d["temperature_2m_min"][day],
+            "temperature_max": d["temperature_2m_max"][day],
+            "precipitation_probability_percent": d["precipitation_probability_max"][day],
+            "condition": WMO.get(d["weather_code"][day], "unknown")}

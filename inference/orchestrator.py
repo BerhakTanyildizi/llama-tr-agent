@@ -63,6 +63,14 @@ GIVE_UP = {
     "tr": "Bu isteği tamamlayamadım. Sorunu biraz daha açık yazarsan yeniden deneyebilirim.",
 }
 
+# The loop writes two observations that tell the model which language to answer
+# in. They used to say "Turkish" unconditionally, which contradicted the
+# directive on every English turn - and the directive is the one the model
+# obeys, so the observation was pure off-distribution noise. The PROSE stays
+# English like every other observation (hybrid strategy: tool output English,
+# answer localized); only the language it NAMES follows the resolved language.
+LANGUAGE_NAMES = {"en": "English", "tr": "Turkish"}
+
 
 # Turkish diacritics are folded before comparison. Without this the guard fires
 # on the model doing the right thing: the user types "Elazıgda", the model
@@ -102,9 +110,18 @@ class Orchestrator:
         self.max_iterations = max_iterations
         self.verbose = verbose
         self.budget = int(self.model.n_ctx * CONTEXT_BUDGET)
-        self.system = prompts.system_prompt(tools.SCHEMAS, variant)
         self.directive = directive
         self.language = language
+        # The system prompt names ONE language, chosen from the configured mode
+        # rather than per turn: it is the cached prefix, so a per-turn clause
+        # would throw away the KV cache every time the language flipped. With
+        # the default "en" the prompt no longer mentions Turkish at all, which
+        # removes the standing contradiction with the English directive.
+        # None -> DEFAULT_LANGUAGE -> "auto" mirrors resolve_language()'s own
+        # precedence, so the two cannot disagree about what "unset" means.
+        self.system = prompts.system_prompt(
+            tools.SCHEMAS, variant,
+            language=language or prompts.DEFAULT_LANGUAGE or "auto")
         self.history: list[dict] = []
 
     # -- prompt ------------------------------------------------------------
@@ -199,10 +216,10 @@ class Orchestrator:
         if not self.verbose:
             return
         seen = " ".join(m["content"] for m in self.history if m["role"] == "ipython")
-        yeni = {n for n in re.findall(r"\d[\d.,]*", answer)
-                if len(n) > 2 and n not in seen}
-        if yeni:
-            self._log(f"not in any observation: {', '.join(sorted(yeni)[:6])}")
+        unseen = {n for n in re.findall(r"\d[\d.,]*", answer)
+                  if len(n) > 2 and n not in seen}
+        if unseen:
+            self._log(f"not in any observation: {', '.join(sorted(unseen)[:6])}")
 
     def _log(self, *a):
         if self.verbose:
@@ -225,6 +242,7 @@ class Orchestrator:
                 return out                                   # final answer
 
             self.history.append({"role": "assistant", "content": out})
+            lang_name = LANGUAGE_NAMES[prompts.resolve_language(self.history, self.language)]
 
             if parse_error:
                 result = {"error": "invalid_tool_call", "message": parse_error}
@@ -232,7 +250,7 @@ class Orchestrator:
                 # Do NOT dispatch: ask the user instead of acting on invented input.
                 result = {"error": "missing_information",
                         "message": "Do not guess these values. Ask the user for them "
-                                    "in Turkish: " + "; ".join(problems)}
+                                    f"in {lang_name}: " + "; ".join(problems)}
             elif (signature := f"{name}:{json.dumps(args, sort_keys=True)}") in already_called:
                 result = {"error": "repeated_call",
                         "message": "You already made this exact call. Use the result "
@@ -246,15 +264,15 @@ class Orchestrator:
                 if "error" in result:
                     outcome = f"error:{result['error']}"
                 elif "source_count" in result:
-                    kaynak = result.get("provider", "?").lstrip("_")
-                    outcome = f"{result['source_count']} kaynak ({kaynak})"
+                    provider = result.get("provider", "?").lstrip("_")
+                    outcome = f"{result['source_count']} sources ({provider})"
                 else:
                     outcome = "ok"
                 self._log(f"{name}({args}) -> {outcome}")
 
             if last:
                 result = dict(result, note="This was the last tool call allowed. "
-                                        "Answer the user in Turkish now.")
+                                        f"Answer the user in {lang_name} now.")
             self.history.append({"role": "ipython", "tool": name or "unknown",
                                 "content": self.observation(name or "unknown", result)})
             self._fit_context(self.history)
@@ -262,7 +280,7 @@ class Orchestrator:
         # Budget exhausted and still calling tools: one forced final answer.
         out = self.model.generate(self.build_prompt(self.history), stop=[EOT])["text"].strip()
         if self.extract_call(out)[0]:
-            out = GIVE_UP.get(self.language or "en", GIVE_UP["en"])
+            out = GIVE_UP[prompts.resolve_language(self.history, self.language)]
         self.history.append({"role": "assistant", "content": out})
         return out
 
@@ -284,17 +302,21 @@ def main() -> None:
     a = ap.parse_args()
 
     try:
+        # a.lang is passed through verbatim: "en"/"tr" pin the language, "auto"
+        # is the sentinel prompts.resolve_language() reads as "mirror the user".
+        # It was previously parsed, printed in the banner and then dropped, so
+        # --lang tr silently ran in English while the banner said lang=tr.
         agent = Orchestrator(serve.Model(a.url), use_grammar=not a.no_grammar,
-                            verbose=a.verbose, variant=a.variant)
+                            verbose=a.verbose, variant=a.variant, language=a.lang)
     except serve.ServerUnavailable as e:
         raise SystemExit(str(e))
 
     print(f"n_ctx={agent.model.n_ctx}  context budget={agent.budget} tokens  "
         f"grammar={'on' if agent.grammar else 'off'}  prompt={a.variant}  lang={a.lang}")
-    print("Sorunuzu yazın (çıkmak için Ctrl+D, geçmişi silmek için /reset).\n")
+    print("Type your question (Ctrl+D to quit, /reset to clear the history).\n")
     while True:
         try:
-            line = input("siz > ").strip()
+            line = input("you > ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return
@@ -302,9 +324,9 @@ def main() -> None:
             continue
         if line == "/reset":
             agent.reset()
-            print("geçmiş temizlendi\n")
+            print("history cleared\n")
             continue
-        print(f"ajan> {agent.answer(line)}\n")
+        print(f"agent> {agent.answer(line)}\n")
         
 
 

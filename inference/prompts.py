@@ -4,8 +4,9 @@
 Both must build the prompt identically or the evaluation measures something the
 product does not use. Defining it twice is exactly how that drift starts.
 
-PREAMBLE and CALL_FORMAT are copied verbatim from the training data. Changing
-them moves the model off its training distribution.
+CALL_FORMAT and the first half of PREAMBLE are copied verbatim from the training
+data; changing them moves the model off its training distribution. The language
+clause is NOT - see LANGUAGE_CLAUSES below.
 
 The VARIANTS differ only in how frugal the model is told to be about calling
 tools. They exist because the base training data is skewed ~71:1 toward calling
@@ -17,11 +18,38 @@ import datetime, re
 PREAMBLE = ("You are a function calling AI model. You are provided with function "
        "signatures within <tools></tools> XML tags. You may call one or more "
        "functions to assist with the user query. Don't make assumptions about "
-       "what values to plug into functions. After receiving the tool results, "
-       "always answer the user in the same language as the user's latest message. "
-       "If the user speaks English, answer in English. If the user speaks Turkish, "
-       "answer in Turkish. Do not switch languages unless the user explicitly asks "
-       "you to.")
+       "what values to plug into functions.")
+
+# The language clause is NOT part of the training preamble (checked: 889 Hermes
+# examples carry no language sentence at all, and the 94 Turkish ones say
+# "always write your final answer to the user in Turkish"). It is a project
+# addition, so it is free to follow the configured language instead of naming
+# both languages on every turn.
+#
+# Why that matters: the mirroring text used to be unconditional, so while
+# DEFAULT_LANGUAGE = "en" the system prompt still said "if the user speaks
+# Turkish, answer in Turkish" ~1500 tokens before a directive that says
+# LANGUAGE: English. Any Turkish user message put the two in direct conflict.
+# Recency means the directive wins, but a contradiction the model has to
+# resolve is not a free thing to leave in the prompt.
+#
+# Keyed by the CONFIGURED language, never the per-turn resolved one: this text
+# sits in the cached prefix, and making it vary per turn would invalidate the
+# system prompt's KV cache on every language flip.
+LANGUAGE_CLAUSES = {
+    "en": (" After receiving the tool results, always answer the user in English, "
+           "in natural and fluent language, regardless of the language of the tool "
+           "output or of the user's message."),
+    "tr": (" After receiving the tool results, always write your final answer to "
+           "the user in Turkish, in natural and fluent language, regardless of the "
+           "language of the tool output."),
+    # Mirroring. The exact wording that shipped before this split, kept so the
+    # eval keeps measuring the bytes it measured before.
+    "auto": (" After receiving the tool results, always answer the user in the same "
+             "language as the user's latest message. If the user speaks English, "
+             "answer in English. If the user speaks Turkish, answer in Turkish. Do "
+             "not switch languages unless the user explicitly asks you to."),
+}
 
 CALL_FORMAT = ("For each function call return a json object with function name and "
               "arguments within <tool_call></tool_call> XML tags.")
@@ -85,13 +113,20 @@ MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 
 
 def system_prompt(schemas: list[dict], variant: str = DEFAULT_VARIANT,
-              today: datetime.date | None = None) -> str:
-    """Builds the system turn. `today` is injectable so tests stay reproducible."""
+              today: datetime.date | None = None,
+              language: str | None = None) -> str:
+    """Builds the system turn. `today` is injectable so tests stay reproducible.
+
+    `language` picks the LANGUAGE_CLAUSES entry: "en"/"tr" name one language,
+    "auto" (and the None default) keep the mirroring wording the eval was
+    measured against.
+    """
     import json
     d = today or datetime.date.today()
+    clause = LANGUAGE_CLAUSES.get(language or "auto", LANGUAGE_CLAUSES["auto"])
     return (f"Cutting Knowledge Date: December 2023\n"
        f"Today Date: {d.day:02d} {MONTHS[d.month - 1]} {d.year}\n\n"
-       + PREAMBLE + VARIANTS[variant] + "\n<tools>\n"
+       + PREAMBLE + clause + VARIANTS[variant] + "\n<tools>\n"
        + json.dumps(schemas, ensure_ascii=False)
        + "\n</tools>\n" + CALL_FORMAT)
 
@@ -201,15 +236,27 @@ def language_preference(messages: list[dict]) -> str | None:
 DEFAULT_LANGUAGE: str | None = "en"
 
 
-def final_directive(messages: list[dict], force: str | None = None) -> str:
-    """Pick the answer language, then return the directive for it.
+def resolve_language(messages: list[dict], force: str | None = None) -> str:
+    """The answer language for this turn. Always returns 'en' or 'tr'.
 
     Precedence: forced mode > explicit user request > detected language of the
     last user message > the language of the most recent message that HAD a
     signal > "en". The walk backwards is what stops a bare "Yes" from resetting
     the language mid-conversation.
+
+    `force` accepts "auto" as well as "en"/"tr". It needs its own value because
+    None already means "nothing was forced, use DEFAULT_LANGUAGE" - and while
+    DEFAULT_LANGUAGE is "en" that collision made --lang auto unreachable: it
+    resolved to English exactly like the pinned default.
+
+    Exposed separately from final_directive because the orchestrator needs the
+    LANGUAGE, not the directive text, for its own user-facing strings and for
+    the language it names in an observation. Deriving it twice is how those
+    drift apart from the directive the model is actually reading.
     """
     lang = force or DEFAULT_LANGUAGE
+    if lang == "auto":                       # mirror the user, as does None
+        lang = None
     if lang is None:
         lang = language_preference(messages)
     if lang is None:
@@ -218,4 +265,9 @@ def final_directive(messages: list[dict], force: str | None = None) -> str:
                 lang = detect_language(m["content"])
                 if lang:
                     break
-    return DIRECTIVES[lang or "en"]
+    return lang or "en"
+
+
+def final_directive(messages: list[dict], force: str | None = None) -> str:
+    """The last-moment directive, in the language resolve_language() picks."""
+    return DIRECTIVES[resolve_language(messages, force)]

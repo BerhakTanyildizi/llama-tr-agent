@@ -231,17 +231,17 @@ def _wikipedia(query: str) -> list[dict]:
         raise
     out = []
     for page in data.get("query", {}).get("pages", {}).values():
-        metin = (page.get("extract") or "").strip()
-        if not metin:
+        extract = (page.get("extract") or "").strip()
+        if not extract:
             continue
-        baslik = page["title"]
+        title = page["title"]
         out.append({
-            "title": baslik,
-            "snippet": metin[:MAX_SNIPPET_CHARS],
-            "url": f"https://{lang}.wikipedia.org/wiki/{urllib.parse.quote(baslik.replace(' ', '_'))}",
+            "title": title,
+            "snippet": extract[:MAX_SNIPPET_CHARS],
+            "url": f"https://{lang}.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}",
             "domain": f"{lang}.wikipedia.org",
             # Already the article body: no _read_url needed for this provider.
-            "page_content": metin[:MAX_PAGE_CHARS],
+            "page_content": extract[:MAX_PAGE_CHARS],
         })
     return out
 
@@ -263,22 +263,22 @@ _CHROME = re.compile(
 def _strip_markdown(text: str) -> str:
     text = _MD_IMAGE.sub(" ", text)
     text = _MD_LINK.sub(r"\1", text)
-    tutulan = []
-    for satir in text.splitlines():
+    kept = []
+    for line in text.splitlines():
         # Collapse runs of spaces BEFORE the length test. A stripped link row
         # ("Instagram     Facebook-f   Youtube") is mostly padding, and measuring
         # it uncollapsed pushed it past the 60-character threshold that was
         # meant to catch it.
-        satir = re.sub(r"[ \t]+", " ", satir).strip().lstrip("#*>-|").strip()
-        if not satir or _CHROME.match(satir):
+        line = re.sub(r"[ \t]+", " ", line).strip().lstrip("#*>-|").strip()
+        if not line or _CHROME.match(line):
             continue
         # Nav rows are wordless: "Instagram Facebook-f Youtube Search" carries no
         # sentence punctuation. Requiring punctuation below ~60 characters drops
         # them while keeping any real sentence, which almost always ends in one.
-        if len(satir) < 60 and not any(ch in satir for ch in ".!?:"):
+        if len(line) < 60 and not any(ch in line for ch in ".!?:"):
             continue
-        tutulan.append(satir)
-    return "\n".join(tutulan).strip()
+        kept.append(line)
+    return "\n".join(kept).strip()
 
 
 def _tavily(query: str) -> list[dict]:
@@ -312,11 +312,11 @@ def _tavily(query: str) -> list[dict]:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             data = json.loads(r.read())
     except urllib.error.HTTPError as e:
-        detay = _redact(e.read().decode("utf-8", "replace"))[:160]
+        detail = _redact(e.read().decode("utf-8", "replace"))[:160]
         if e.code in (401, 403):
-            raise SearchBlocked(f"tavily rejected the API key (HTTP {e.code}): {detay}") from None
+            raise SearchBlocked(f"tavily rejected the API key (HTTP {e.code}): {detail}") from None
         if e.code == 429:
-            raise SearchBlocked(f"tavily quota or rate limit (HTTP 429): {detay}") from None
+            raise SearchBlocked(f"tavily quota or rate limit (HTTP 429): {detail}") from None
         raise
     out = []
     for r in data.get("results", []):
@@ -324,13 +324,13 @@ def _tavily(query: str) -> list[dict]:
         # raw_content is the page body; content is Tavily's relevant extract.
         # Falling back to content matters: raw_content comes back null for
         # pages Tavily could not fetch either.
-        govde = _strip_markdown(r.get("raw_content") or r.get("content") or "")
+        page_text = _strip_markdown(r.get("raw_content") or r.get("content") or "")
         out.append({
             "title": (r.get("title") or "").strip(),
             "snippet": _strip_markdown(r.get("content") or "")[:MAX_SNIPPET_CHARS],
             "url": url,
             "domain": _domain(url),
-            "page_content": govde[:MAX_PAGE_CHARS],
+            "page_content": page_text[:MAX_PAGE_CHARS],
         })
     return out
 
@@ -346,20 +346,20 @@ PROVIDERS = ((_tavily,) if TAVILY_API_KEY else ()) + (_ddg_lite, _wikipedia)
 
 def _search(query: str) -> tuple[list[dict], str]:
     """Returns (results, provider name). Raises SearchBlocked if all are blocked."""
-    engellenen = []
+    blocked = []
     for provider in PROVIDERS:
         try:
             results = provider(query)
         except SearchBlocked as e:
-            engellenen.append(f"{provider.__name__}: {e}")
+            blocked.append(f"{provider.__name__}: {e}")
             continue
         except Exception as e:
-            engellenen.append(f"{provider.__name__}: {type(e).__name__}")
+            blocked.append(f"{provider.__name__}: {type(e).__name__}")
             continue
         if results:
             return results, provider.__name__
-    if len(engellenen) == len(PROVIDERS):
-        raise SearchBlocked("; ".join(engellenen))
+    if len(blocked) == len(PROVIDERS):
+        raise SearchBlocked("; ".join(blocked))
     return [], "none"
 
 
@@ -398,15 +398,15 @@ def run(query: str, num_results: int = MIN_RESULTS) -> dict:
     # the provider actually spans several. Wikipedia returns every article under
     # one domain, and de-duplicating by domain there collapsed a good three-hit
     # answer down to a single source.
-    tek_domain = len({r.get("domain", "") for r in raw}) <= 1
+    single_domain = len({r.get("domain", "") for r in raw}) <= 1
     picked, seen = [], set()
     for r in raw:
-        anahtar = r.get("url", "") if tek_domain else r.get("domain", "")
-        if anahtar and anahtar in seen:
+        dedup_key = r.get("url", "") if single_domain else r.get("domain", "")
+        if dedup_key and dedup_key in seen:
             continue
         picked.append(r)
-        if anahtar:
-            seen.add(anahtar)
+        if dedup_key:
+            seen.add(dedup_key)
         if len(picked) >= n + OVERFETCH:
             break
 
