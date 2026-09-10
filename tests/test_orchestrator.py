@@ -156,6 +156,24 @@ class Grounding(unittest.TestCase):
         msgs = [{"role": "user", "content": "Elazigda hava nasil?"}]
         self.assertEqual(self.a._ungrounded("get_weather", {"location": "Elazığ"}, msgs), [])
 
+    def test_a_remembered_fact_grounds_the_call(self):
+        """The profile is the user's words - /remember is typed by the user and
+        never written by the model (item 33). Leaving it out of the haystack was
+        not a stricter check but a wrong one: with "i am from Elazig/Turkey"
+        remembered, "the weather in my city" built a correct
+        get_weather(location='Elazig') and the guard refused it, so the agent
+        asked the user for a city it had been told to remember."""
+        a = agent(["x"], profile=("i am from Elazig/Turkey",))
+        msgs = [{"role": "user", "content": "How is the weather in my city"}]
+        self.assertEqual(a._ungrounded("get_weather", {"location": "Elazig"}, msgs), [])
+
+    def test_a_profile_without_the_value_still_blocks(self):
+        """The guard must not have been loosened into uselessness: with no city
+        remembered the model still reaches for 'Ankara' (item 8) and is stopped.
+        Measured live at 6/6 blocked."""
+        a = agent(["x"], profile=("My name is Berhak", "I am a software engineer"))
+        self.assertTrue(a._ungrounded("get_weather", {"location": "Ankara"}, self.msgs))
+
     def test_placeholder_in_a_required_slot_blocks(self):
         problems = self.a._ungrounded("calculate", {"expression": "unknown"}, self.msgs)
         self.assertTrue(problems)

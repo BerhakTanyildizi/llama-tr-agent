@@ -23,7 +23,15 @@ DIR = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "m
 FILE = DIR / "session.jsonl"
 PROFILE_FILE = DIR / "profile.txt"
 RESTORE_MESSAGES = 8            # four exchanges
-MAX_FACTS = 20                  # every fact is re-sent on every turn, so it is capped
+# A PROMPT budget, not a storage limit - every fact is re-sent on every turn.
+# It is applied by for_prompt(), never by the code that writes the file. It used
+# to be applied in both places and with opposite ends of the list: load() kept
+# the first 20 and add() saved the last 20, so on a file with 25 hand-written
+# lines a single /remember rewrote the file with 20 and destroyed six facts -
+# the oldest one and everything past the cap - with nothing printed. /forget did
+# the same. This file is documented as hand-editable, which makes silently
+# rewriting it the one thing it must not do.
+MAX_FACTS = 20
 KEEP = ("role", "content", "tool")
 
 
@@ -81,17 +89,31 @@ class Profile:
         self.path = path
 
     def load(self) -> list[str]:
+        """Everything on disk. The cap belongs to the prompt, not to the file."""
         if not self.path.exists():
             return []
         return [line.strip() for line in
-                self.path.read_text(encoding="utf-8").splitlines() if line.strip()][:MAX_FACTS]
+                self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-    def add(self, fact: str) -> list[str]:
+    def for_prompt(self) -> list[str]:
+        """The newest MAX_FACTS - what the turn can afford to carry."""
+        return self.load()[-MAX_FACTS:]
+
+    def add(self, fact: str) -> tuple[list[str], str | None]:
+        """Returns the facts and why nothing was added, if nothing was.
+
+        The REPL printed "remembered (4 facts)" for an empty or duplicate
+        /remember too, because it only ever saw the count. Reporting a write
+        that did not happen is the same class of untruth as item 22.
+        """
         facts = self.load()
         fact = " ".join(fact.split())
-        if fact and fact not in facts:
-            facts.append(fact)
-        return self._save(facts[-MAX_FACTS:])
+        if not fact:
+            return facts, "nothing to remember"
+        if fact in facts:
+            return facts, "already remembered"
+        facts.append(fact)
+        return self._save(facts), None
 
     def remove(self, index: int) -> str | None:
         """1-based, matching what /memory prints."""

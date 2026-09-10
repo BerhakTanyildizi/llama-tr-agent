@@ -40,6 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from inference import prompts, serve, session, tools            # noqa: E402
+from inference.session import MAX_FACTS as MAX                   # noqa: E402
 from inference.grammar import generate_gbnf                     # noqa: E402
 
 # --- prompt building --------------------------------------------------------
@@ -154,9 +155,6 @@ class Orchestrator:
         self.budget = int(self.model.n_ctx * CONTEXT_BUDGET)
         self.directive = directive
         self.language = language
-        # Durable user facts, rendered beside the directive rather than in the
-        # cached prefix. Empty here, so eval and tests see the measured prompt.
-        self.profile = profile
         # When set, prose is streamed to this callback as it is generated.
         # None keeps the buffered behaviour, which is what the eval wants.
         self.on_text = on_text
@@ -167,10 +165,28 @@ class Orchestrator:
         # removes the standing contradiction with the English directive.
         # None -> DEFAULT_LANGUAGE -> "auto" mirrors resolve_language()'s own
         # precedence, so the two cannot disagree about what "unset" means.
-        self.system = prompts.system_prompt(
-            tools.SCHEMAS, variant,
-            language=language or prompts.DEFAULT_LANGUAGE or "auto")
+        self._variant = variant
+        self._prompt_language = language or prompts.DEFAULT_LANGUAGE or "auto"
+        # Assigning through the property builds self.system. Durable user facts
+        # live in that cached prefix, not beside the directive - the directive
+        # slot is what the model answers, so a standing list of facts there
+        # competed with the question (see prompts.PROFILE_BLOCK). Empty by
+        # default, so eval and the tests see the measured prompt byte for byte.
+        self.profile = profile
         self.history: list[dict] = []
+
+    @property
+    def profile(self) -> tuple[str, ...]:
+        return self._profile
+
+    @profile.setter
+    def profile(self, facts) -> None:
+        """Rebuilds the system turn. /remember has to take effect immediately,
+        and the facts are now part of the prefix rather than of every turn."""
+        self._profile = tuple(facts)
+        self.system = prompts.system_prompt(
+            tools.SCHEMAS, self._variant, language=self._prompt_language,
+            profile=self._profile)
 
     # -- prompt ------------------------------------------------------------
 
@@ -184,7 +200,7 @@ class Orchestrator:
         # cached prefix, so the system prompt's KV cache is untouched.
         if self.directive:
             p += HEADER.format("system") + prompts.final_directive(
-                messages, self.language, self.profile) + EOT
+                messages, self.language) + EOT
         return p + HEADER.format("assistant")   # left open: the model speaks next
 
     @staticmethod
@@ -237,11 +253,21 @@ class Orchestrator:
         Only the user's words and tool results count as grounding. Assistant
         turns are excluded on purpose: otherwise a value the model invented in
         one turn launders itself into "grounded" in the next.
+
+        THE PROFILE COUNTS AS THE USER'S WORDS, because it is: /remember is
+        typed by the user and never written by the model (item 33), which is the
+        exact property that makes assistant turns untrustworthy here. Leaving it
+        out was not a stricter check, it was a wrong one. Observed live: with
+        "i am from Elazig/Turkey" remembered, "How is the weather in my city"
+        produced a perfectly grounded get_weather(location='Elazig') and this
+        method blocked it as a fabrication - so the agent asked the user for a
+        city it had been told to remember. Another correctly-formed call refused
+        by the harness and read as the memory not working (items 14, 17, 18).
         """
         must_ground = tools.grounded_params(name)
         required = tools.required_params(name)
-        said = _norm(" ".join(m["content"] for m in messages
-                            if m["role"] in ("user", "ipython")))
+        said = _norm(" ".join([*(m["content"] for m in messages
+                                if m["role"] in ("user", "ipython")), *self.profile]))
         problems = []
         for k, v in list(args.items()):
             if not isinstance(v, str) or not v.strip():
@@ -496,12 +522,19 @@ def main() -> None:
     store = session.Session(enabled=not a.no_history)
     agent.history.extend(store.load())
     profile = session.Profile()
-    agent.profile = tuple(profile.load())
+    agent.profile = tuple(profile.for_prompt())
 
     def show_memory() -> None:
         facts = profile.load()
-        print("\n".join(f"  {i}. {f}" for i, f in enumerate(facts, 1))
-            if facts else "  (nothing remembered yet)")
+        if not facts:
+            print("  (nothing remembered yet)\n")
+            return
+        # The cap is a prompt budget, so say which lines are actually carried
+        # rather than letting the file and the prompt disagree in silence.
+        carried = len(facts) - len(profile.for_prompt())
+        for i, f in enumerate(facts, 1):
+            print(f"  {i}. {f}" + ("   (not sent - past the {} fact limit)".format(MAX)
+                                if i <= carried else ""))
         print()
 
     print(f"n_ctx={agent.model.n_ctx}  context budget={agent.budget} tokens  "
@@ -521,6 +554,13 @@ def main() -> None:
             return
         if not line:
             continue
+        # partition, not startswith("/remember "): input() is stripped first, so
+        # a bare "/remember" - or one typed with only trailing spaces - matched
+        # no command and was sent to the MODEL as a question. It answered "Sure,
+        # I have taken note of that", which is the worst possible outcome: the
+        # user is told the fact was stored and nothing was written.
+        command, _, argument = line.partition(" ")
+        argument = argument.strip()
         if line == "/reset":
             agent.reset()
             store.mark_reset()
@@ -529,19 +569,22 @@ def main() -> None:
         if line == "/memory":
             show_memory()
             continue
-        if line.startswith("/remember "):
-            agent.profile = tuple(profile.add(line[len("/remember "):]))
-            n = len(agent.profile)
-            print(f"remembered ({n} fact{'' if n == 1 else 's'})\n")
+        if command == "/remember":
+            if not argument:
+                print("usage: /remember <fact>\n")
+                continue
+            facts, why = profile.add(argument)
+            agent.profile = tuple(profile.for_prompt())
+            n = len(facts)
+            print(f"{why or 'remembered'} ({n} fact{'' if n == 1 else 's'})\n")
             continue
-        if line.startswith("/forget "):
-            arg = line[len("/forget "):].strip()
-            dropped = profile.remove(int(arg)) if arg.isdigit() else None
+        if command == "/forget":
+            dropped = profile.remove(int(argument)) if argument.isdigit() else None
             if dropped is None:
                 print("usage: /forget <number from /memory>\n")
                 show_memory()
                 continue
-            agent.profile = tuple(profile.load())
+            agent.profile = tuple(profile.for_prompt())
             print(f"forgot: {dropped}\n")
             continue
         # A failed turn must not take the conversation with it: the history is

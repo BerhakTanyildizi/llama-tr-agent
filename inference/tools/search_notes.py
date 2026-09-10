@@ -63,10 +63,17 @@ def run(query: str) -> dict:
         # reporting it as "no notes found" would send the user looking for the
         # wrong thing.
         return {"error": "no_notes_directory",
+                # "AGENT_NOTES_DIR in .env points the tool elsewhere" asserted, as
+                # fact, that the user's .env already points somewhere else - and the
+                # message instructs the model to relay it, so the user was told
+                # something false about their own configuration. Item 22 again: a
+                # message is written for the model but has to survive being read by
+                # the user.
                 "message": (f"There is no notes folder at {NOTES_DIR}, so nothing could be "
-                            "searched. Tell the user the folder is missing and that "
-                            "AGENT_NOTES_DIR in .env points the tool elsewhere. Do NOT "
-                            "invent notes and do NOT answer from prior knowledge.")}
+                            "searched. Tell the user that this folder is missing, and that "
+                            "setting AGENT_NOTES_DIR in .env can point the tool at a "
+                            "different folder. Do NOT invent notes and do NOT answer from "
+                            "prior knowledge.")}
 
     scored = []
     files = [p for p in sorted(NOTES_DIR.rglob("*"))

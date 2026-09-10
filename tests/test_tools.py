@@ -127,6 +127,56 @@ class SystemTime(unittest.TestCase):
             locale.setlocale(locale.LC_TIME, "C")
 
 
+class PageExtraction(unittest.TestCase):
+    """What the model is given to read. No network: HTML in, text out.
+
+    The bug: asked for fine-tuning settings for Qwen3-4B on an RTX 4060, the
+    best source's whole 915-character body was its menu - "English / Homepage /
+    Get Started / Installation / Models ...". Two of three bodies were chrome
+    and the only one carrying prose was a thread about Brazilian legal texts,
+    so the answer came back about contracts and statutes. That reads as the
+    model ignoring its sources; it was reading exactly what we handed it.
+    """
+
+    @staticmethod
+    def extract(html: str) -> str:
+        p = gs._PageExtractor()
+        p.feed(html)
+        return " ".join(p.content().split())
+
+    def test_sidebar_is_left_out(self):
+        """Documentation sites build the menu from <aside>, not <nav>."""
+        text = self.extract("<html><body>"
+            "<aside><ul><li>Homepage</li><li>Installation</li></ul></aside>"
+            "<div><p>Qwen3 fine-tunes in 16GB of VRAM.</p></div></body></html>")
+        self.assertIn("Qwen3 fine-tunes", text)
+        self.assertNotIn("Installation", text)
+
+    def test_main_wins_over_the_chrome_around_it(self):
+        """Chrome above the content is why the 900-char budget was spent before
+        the article started ("Skip to main content / On this page / ...")."""
+        text = self.extract("<html><body><div>Skip to main content</div>"
+            "<div>On this page</div><main><p>The card costs $299.</p></main>"
+            "<div>Cookie notice</div></body></html>")
+        self.assertEqual(text, "The card costs $299.")
+
+    def test_a_page_without_main_keeps_its_text(self):
+        """Most of the web has neither tag, and an empty body costs the source
+        its slot. Measured over seven live pages: none lost content."""
+        text = self.extract("<html><body><p>Plain old page.</p></body></html>")
+        self.assertIn("Plain old page.", text)
+
+    def test_an_empty_main_does_not_swallow_the_page(self):
+        text = self.extract("<html><body><main></main>"
+                            "<p>Real content lives here.</p></body></html>")
+        self.assertIn("Real content", text)
+
+    def test_scripts_and_styles_stay_out(self):
+        text = self.extract("<html><body><script>var x=1</script>"
+                            "<style>.a{color:red}</style><p>Body text.</p></body></html>")
+        self.assertEqual(text, "Body text.")
+
+
 class SearchHelpers(unittest.TestCase):
     def test_markdown_chrome_is_stripped_and_prose_kept(self):
         raw = ("![logo](x.png)\nSkip to content\nInstagram Facebook-f Youtube\n"

@@ -16,9 +16,9 @@ examples were masked out entirely, so only ~97 examples ever taught restraint).
 import datetime, re
 
 PREAMBLE = ("You are a function calling AI model. You are provided with function "
-       "signatures within <tools></tools> XML tags. You may call one or more "
-       "functions to assist with the user query. Don't make assumptions about "
-       "what values to plug into functions.")
+    "signatures within <tools></tools> XML tags. You may call one or more "
+    "functions to assist with the user query. Don't make assumptions about "
+    "what values to plug into functions.")
 
 # The language clause is NOT part of the training preamble (checked: 889 Hermes
 # examples carry no language sentence at all, and the 94 Turkish ones say
@@ -38,21 +38,21 @@ PREAMBLE = ("You are a function calling AI model. You are provided with function
 # system prompt's KV cache on every language flip.
 LANGUAGE_CLAUSES = {
     "en": (" After receiving the tool results, always answer the user in English, "
-           "in natural and fluent language, regardless of the language of the tool "
-           "output or of the user's message."),
+        "in natural and fluent language, regardless of the language of the tool "
+        "output or of the user's message."),
     "tr": (" After receiving the tool results, always write your final answer to "
-           "the user in Turkish, in natural and fluent language, regardless of the "
-           "language of the tool output."),
+        "the user in Turkish, in natural and fluent language, regardless of the "
+        "language of the tool output."),
     # Mirroring. The exact wording that shipped before this split, kept so the
     # eval keeps measuring the bytes it measured before.
     "auto": (" After receiving the tool results, always answer the user in the same "
-             "language as the user's latest message. If the user speaks English, "
-             "answer in English. If the user speaks Turkish, answer in Turkish. Do "
-             "not switch languages unless the user explicitly asks you to."),
+                "language as the user's latest message. If the user speaks English, "
+                "answer in English. If the user speaks Turkish, answer in Turkish. Do "
+                "not switch languages unless the user explicitly asks you to."),
 }
 
 CALL_FORMAT = ("For each function call return a json object with function name and "
-              "arguments within <tool_call></tool_call> XML tags.")
+                "arguments within <tool_call></tool_call> XML tags.")
 
 VARIANTS = {
 # Training prompt as-is. Baseline: 90% overall, but calls a tool for half of
@@ -61,9 +61,9 @@ VARIANTS = {
 
 # One sentence of restraint. Measured 90% overall, wrong_tool_trap 3/5.
 "V1": (" Only call a function when the answer requires real-time, external, "
-       "or user-specific information that you cannot know. If you can answer "
-       "from your own knowledge, answer directly in the user's language without calling "
-       "any function."),
+        "or user-specific information that you cannot know. If you can answer "
+        "from your own knowledge, answer directly in the user's language without calling "
+        "any function."),
 
 # Stronger restraint. Measured 93% overall, wrong_tool_trap 5/5.
 # WITHDRAWN FROM PRODUCTION: in live use it suppressed an explicit search
@@ -71,37 +71,37 @@ VARIANTS = {
 # "definitions, explanations, science" routes such questions to a direct
 # answer - and the model then invented a theory that does not exist.
 "V2": (" Most user questions do NOT require a function call. Call a function "
-       "ONLY for live data you cannot know: current weather, the current date "
-       "or time, and facts that changed after your knowledge cutoff. For "
-       "everything else - definitions, explanations, history, science, math, "
-       "advice, opinions - answer directly in the user's language and do NOT call any "
-       "function."),
+        "ONLY for live data you cannot know: current weather, the current date "
+        "or time, and facts that changed after your knowledge cutoff. For "
+        "everything else - definitions, explanations, history, science, math, "
+        "advice, opinions - answer directly in the user's language and do NOT call any "
+        "function."),
 
 # V2 plus two escape hatches, added after the live failure above. The
 # asymmetry is deliberate: an unnecessary search costs latency, a skipped
 # search costs a confidently wrong answer.
 "V3": (" Most user questions do NOT require a function call: answer directly "
-       "in the user's language whenever you reliably know the answer - history, science, "
-       "math, definitions, advice and opinions. Call a function in three "
-       "cases: (1) the answer depends on live data you cannot know, such as "
-       "current weather, the current date or time, prices, news, or anything "
-       "that changed after your knowledge cutoff; (2) the user explicitly "
-       "asks you to search or look something up; (3) you do not recognise "
-       "the subject well enough to answer confidently - in that case search "
-       "instead of guessing. Never invent facts about a topic you do not know. "
-       "IMPORTANT: When you perform a search, do not just list the resulting links. "
-       "The search tool automatically extracts and includes the text content of the "
-       "resulting pages. Read this content carefully, and combine this external "
-       "information with your internal knowledge to provide a comprehensive, detailed, "
-       "and directly useful answer to the user. "
-       "The sources are in whatever language the web returned them in. Do NOT "
-       "translate them sentence by sentence: read them, then write the answer "
-       "from scratch in natural, grammatical prose in the user's language. Never "
-       "leave half-translated phrases or foreign words inside a sentence when a "
-       "normal word exists. "
-       "Length: answer in at least four to six full sentences. Explain the concept, "
-       "give the reason or mechanism behind it, and add a concrete example where it "
-       "helps. A one-line definition is not an acceptable answer."),
+        "in the user's language whenever you reliably know the answer - history, science, "
+        "math, definitions, advice and opinions. Call a function in three "
+        "cases: (1) the answer depends on live data you cannot know, such as "
+        "current weather, the current date or time, prices, news, or anything "
+        "that changed after your knowledge cutoff; (2) the user explicitly "
+        "asks you to search or look something up; (3) you do not recognise "
+        "the subject well enough to answer confidently - in that case search "
+        "instead of guessing. Never invent facts about a topic you do not know. "
+        "IMPORTANT: When you perform a search, do not just list the resulting links. "
+        "The search tool automatically extracts and includes the text content of the "
+        "resulting pages. Read this content carefully, and combine this external "
+        "information with your internal knowledge to provide a comprehensive, detailed, "
+        "and directly useful answer to the user. "
+        "The sources are in whatever language the web returned them in. Do NOT "
+        "translate them sentence by sentence: read them, then write the answer "
+        "from scratch in natural, grammatical prose in the user's language. Never "
+        "leave half-translated phrases or foreign words inside a sentence when a "
+        "normal word exists. "
+        "Length: answer in at least four to six full sentences. Explain the concept, "
+        "give the reason or mechanism behind it, and add a concrete example where it "
+        "helps. A one-line definition is not an acceptable answer."),
 }
 
 DEFAULT_VARIANT = "V3"
@@ -109,26 +109,31 @@ DEFAULT_VARIANT = "V3"
 # Written out by hand: strftime("%b") follows the OS locale and yields "Tem"
 # under a Turkish locale, which breaks the Llama-3.1 template (CLAUDE.md item 6).
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
 def system_prompt(schemas: list[dict], variant: str = DEFAULT_VARIANT,
-              today: datetime.date | None = None,
-              language: str | None = None) -> str:
+                today: datetime.date | None = None,
+                language: str | None = None,
+                profile: tuple[str, ...] = ()) -> str:
     """Builds the system turn. `today` is injectable so tests stay reproducible.
 
     `language` picks the LANGUAGE_CLAUSES entry: "en"/"tr" name one language,
     "auto" (and the None default) keep the mirroring wording the eval was
     measured against.
+
+    `profile` is the /remember facts. With none - which is how eval calls it -
+    the text is byte-identical to what every recorded score was measured on.
     """
     import json
     d = today or datetime.date.today()
     clause = LANGUAGE_CLAUSES.get(language or "auto", LANGUAGE_CLAUSES["auto"])
-    return (f"Cutting Knowledge Date: December 2023\n"
-       f"Today Date: {d.day:02d} {MONTHS[d.month - 1]} {d.year}\n\n"
-       + PREAMBLE + clause + VARIANTS[variant] + "\n<tools>\n"
-       + json.dumps(schemas, ensure_ascii=False)
-       + "\n</tools>\n" + CALL_FORMAT)
+    text = (f"Cutting Knowledge Date: December 2023\n"
+        f"Today Date: {d.day:02d} {MONTHS[d.month - 1]} {d.year}\n\n"
+        + PREAMBLE + clause + VARIANTS[variant] + "\n<tools>\n"
+        + json.dumps(schemas, ensure_ascii=False)
+        + "\n</tools>\n" + CALL_FORMAT)
+    return text + "\n\n" + profile_block(profile) if profile else text
 
 
 # --- last-moment directive --------------------------------------------------
@@ -143,9 +148,9 @@ def system_prompt(schemas: list[dict], variant: str = DEFAULT_VARIANT,
 # explicitly, so it is told explicitly on every turn.
 _TR_CHARS = "çğıöşüÇĞİÖŞÜ"
 _TR_WORDS = ("bir", "ve", "için", "ile", "bu", "şu", "var", "yok", "nasıl",
-             "nedir", "mı", "mi", "mu", "ne", "bana", "daha")
+                "nedir", "mı", "mi", "mu", "ne", "bana", "daha")
 _EN_WORDS = ("the", "and", "is", "are", "of", "to", "in", "that", "with",
-             "for", "you", "your", "what", "how", "explain", "search")
+                "for", "you", "your", "what", "how", "explain", "search")
 
 
 def detect_language(text: str) -> str | None:
@@ -277,11 +282,39 @@ def resolve_language(messages: list[dict], force: str | None = None) -> str:
     return lang or "en"
 
 
-# Placed with the directive rather than in the system prompt, for the same
-# reason the length instruction is (item 11): this model follows what sits next
-# to the generation point, not what opened a ~1500-token prompt. It also keeps
-# /remember instant - a fact added mid-conversation would otherwise rewrite the
-# cached prefix and cost a full reprocess on the very next turn.
+# WHERE THIS BLOCK GOES DECIDED MORE THAN WHAT IT SAYS.
+#
+# It used to be rendered beside the final directive, i.e. as the last thing in
+# the prompt before the model speaks - chosen because item 11 measured that this
+# model follows what sits next to the generation point, and because /remember
+# stayed instant there (a fact added mid-conversation does not rewrite the
+# cached prefix).
+#
+# Both reasons were real and the placement was still wrong. That slot is the
+# strongest position in the prompt, and filling it with a list of facts on EVERY
+# turn put the standing block in competition with the question. Measured live
+# against the transcript that exposed it, 6 turns per cell:
+#
+#     profile position   stale answer leaked   turn derailed   memory usable
+#     beside directive          5/6                2/6            24/24
+#     in the system prompt      0/6                0/6            23/24
+#     no profile at all         0/6                1/6             1/24
+#
+# The symptom was not subtle: asked for the latest Python version, the model
+# opened with the iPhone answer from three turns earlier; told "no, the latest
+# iPhone is 18", it replied "Hello! I'm glad you're here". With the facts in the
+# cached prefix instead, both vanish and the memory still works - 23/24 against
+# 24/24 is the same number. The bottom row is the control: turn the profile off
+# and the failures also go, but so does the feature (1/24).
+#
+# So the profile is BACKGROUND, and background belongs where the rest of the
+# background lives. The cost is real and small: /remember now invalidates the
+# ~1100-token prefix once, about six seconds at the measured 175 tok/s, at the
+# moment the user types it. The old placement paid instead on every single turn,
+# with answers aimed at the wrong thing. Item 31 measured the same force from
+# the other side - the profile winning over "what did I just tell you?" - and
+# fixed it by ordering profile before directive. That was a smaller dose of this
+# bug, and the ordering fix treated the symptom.
 #
 # No restriction on using the facts. The first version said "never recite them
 # back and never treat them as the question", written against a model that
@@ -290,20 +323,96 @@ def resolve_language(messages: list[dict], force: str | None = None) -> str:
 # fact, so the clause forbade the behaviour it was added to support.
 # "told you" is avoided on purpose: it collides with "what did I just tell you",
 # which the model then answered from this list instead of the previous turn.
-PROFILE_BLOCK = "Background facts about the user, known from before this conversation:\n{}"
+#
+# WHY EVERY LINE CARRIES A LABEL. A fact is stored verbatim, in the voice the
+# user typed it in - a voice that ADDRESSES the assistant. Replayed inside a
+# system turn it is read in the assistant's voice, and both pronouns flip
+# referent on the way:
+#     "My name is Berhak"  -> the model claims the name as its own
+#     "your name is NEXUS" -> the model files it as the user's name
+# Observed live, exactly that pair, swapped: "What is your name?" -> "My name is
+# Berhak", "What is my name?" -> "Your name is NEXUS". The old header made the
+# second half worse rather than better, because "facts about the user" asserts
+# that a fact addressed TO the assistant is about the user.
+#
+# Measured live against the four facts above, 8 turns per question at the REPL's
+# own temperature of 0.5:
+#     old header, lines unlabelled                       18/32
+#     per-line label                                     29/32
+#     per-line label + quoted  (shipped)                 31/32
+# The label is the same lesson as items 11 and 31, a third time: the model
+# follows what sits NEXT TO the text it applies. A pronoun rule stated once in a
+# heading has to be carried across four lines; a label two words away does not.
+# Measured separately at 5 turns per question, a heading that explained the
+# pronouns but left the lines unlabelled scored 15/20 and answered "what is my
+# name" 1/5 - WORSE than doing nothing - so the label was not a free guess.
+#
+# The quotes are worth their two characters twice over: they mark the fact as
+# reported speech, which is what makes its pronouns someone else's, and they
+# bound a hand-editable file's contents so a fact cannot read as prompt
+# structure.
+#
+# REJECTED, AND EXPENSIVE TO REDISCOVER: re-anchoring the pronouns instead of
+# labelling them - rendering the facts in the assistant's own voice as "Your
+# name is Berhak" / "My name is NEXUS". It reads correctly to a human and scored
+# 16/32, INVERTED: 0/8 on "what is your name", where the model answered "my name
+# is Berhak". In a SYSTEM turn "Your name is X" is the conventional way to name
+# the ASSISTANT, so the rewrite collided head-on with the strongest prior the
+# model has about that position. The same convention is why the original bug's
+# second half was not really a model error at all: "your name is NEXUS" WAS the
+# assistant's name, and the old heading was the thing asserting otherwise.
+#
+# HARNESS NOTE: the first scorer for all of this failed any answer that
+# mentioned the other party's name, so "Hi Berhak! I'm NEXUS" was counted wrong
+# for "what is your name" - the model was right and the measurement was not. It
+# understated every variant and understated the chatty ones most, which is to
+# say it would have picked the wrong winner. Items 14, 15 and 17 again: grade
+# the claim, not the presence of a token.
+PROFILE_BLOCK = ("Facts the user asked you to remember, quoted in the user's own words "
+                 "and each labelled with who it is about:\n{}")
+
+# Whole words only: "im" would match inside "important" and "i" inside anything.
+_FIRST_PERSON = re.compile(r"\b(i|i'm|im|me|my|mine|myself|we|our|us)\b", re.I)
+_SECOND_PERSON = re.compile(r"\b(you|you're|your|yours|yourself)\b", re.I)
+
+ABOUT_USER = "about the user"
+ABOUT_ASSISTANT = "about you, the assistant"
+NEUTRAL = "the user's note"
 
 
-def final_directive(messages: list[dict], force: str | None = None,
-                    profile: tuple[str, ...] = ()) -> str:
+def attribute(fact: str) -> str:
+    """Label one stored fact with who it is about, from its grammatical person.
+
+    Only the unambiguous halves are named. A line carrying BOTH persons ("I
+    want you to be brief") is about the user AND about the assistant, and one
+    carrying NEITHER ("the deadline is Friday") is about neither; guessing on
+    those would re-introduce, in miniature, the very lie this fixes - the old
+    header called every line a fact about the user, including the one that was
+    not. They get a truthful third label instead of a coin flip.
+
+    This is deliberately not a classifier. It reads grammatical person, which
+    is decidable, and declines to infer intent, which is not. Same reasoning as
+    item 19, where a measured-but-leaky arithmetic gate was left uninstalled.
+    """
+    first, second = _FIRST_PERSON.search(fact), _SECOND_PERSON.search(fact)
+    if first and not second:
+        return ABOUT_USER
+    if second and not first:
+        return ABOUT_ASSISTANT
+    return NEUTRAL
+
+
+def profile_block(profile: tuple[str, ...]) -> str:
+    """The remembered facts, labelled. Rendered into the system turn."""
+    return PROFILE_BLOCK.format(
+        "\n".join(f'- {attribute(fact)}: "{fact}"' for fact in profile))
+
+
+def final_directive(messages: list[dict], force: str | None = None) -> str:
     """The last-moment directive, in the language resolve_language() picks.
 
-    With no profile the text is byte-identical to what the eval measured.
+    Nothing but the directive goes here any more. Whatever occupies this slot
+    is what the model answers, so it holds the instruction for THIS turn and
+    nothing standing - see the placement note above PROFILE_BLOCK.
     """
-    directive = DIRECTIVES[resolve_language(messages, force)]
-    if not profile:
-        return directive
-    # Profile FIRST, directive last. With the order reversed the closing lines
-    # of the prompt were a list of facts about the user, so "What did I just
-    # tell you?" was answered with the profile instead of the previous turn.
-    return PROFILE_BLOCK.format(
-        "\n".join(f"- {fact}" for fact in profile)) + "\n\n" + directive
+    return DIRECTIVES[resolve_language(messages, force)]

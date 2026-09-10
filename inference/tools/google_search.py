@@ -94,27 +94,74 @@ class _DDGParser(HTMLParser):
 
 
 class _PageExtractor(HTMLParser):
+    """Page text for the model, with the site's furniture left out.
+
+    MEASURED, and the cause of answers that looked like the model ignoring its
+    sources: asked for fine-tuning settings for Qwen3-4B on an RTX 4060, all
+    915 characters of the best source's body were its menu - "English / Homepage
+    / Get Started / Installation / Models / Beginner? ...". Two of the three
+    bodies were chrome, the only one carrying prose was a forum thread about
+    Brazilian LEGAL texts, and the model summarised that faithfully. The search
+    was good, the reading was ours.
+
+    Nothing here guesses at relevance; both rules are structural.
+
+    1. <aside> joins the ignore list. nav/header/footer were already skipped,
+       but documentation sites build their sidebar out of <aside> or plain
+       divs, so the menu walked straight through.
+    2. When the page HAS a <main> or <article>, only that is kept. This is what
+       fixes the pages whose chrome sits above the content rather than beside
+       it: databricks opened with "Skip to main content / On this page", and
+       videocardprices spent the budget on its own title.
+
+    Not to be confused with the windowing that failed three times (CLAUDE.md
+    item 29). That tried to pick the best PROSE by query terms and lost. This
+    only separates prose from furniture, which the markup already tells us.
+    """
+    IGNORE = {"script", "style", "noscript", "nav", "footer", "header", "svg", "aside"}
+    CONTENT = {"main", "article"}
+    BREAK = {"p", "br", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr"}
+
     def __init__(self):
         super().__init__()
         self.text = []
+        self.main = []
         self._ignore = 0
-        self._ignore_tags = {"script", "style", "noscript", "nav", "footer", "header", "svg"}
-        
+        self._in_main = 0
+
     def handle_starttag(self, tag, attrs):
-        if tag in self._ignore_tags:
+        if tag in self.IGNORE:
             self._ignore += 1
+        elif tag in self.CONTENT:
+            self._in_main += 1
 
     def handle_endtag(self, tag):
-        if tag in self._ignore_tags:
+        if tag in self.IGNORE:
             self._ignore = max(0, self._ignore - 1)
-        elif tag in {"p", "br", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr"}:
+        elif tag in self.CONTENT:
+            self._in_main = max(0, self._in_main - 1)
+        elif tag in self.BREAK:
             self.text.append("\n")
+            if self._in_main:
+                self.main.append("\n")
 
     def handle_data(self, data):
-        if self._ignore == 0:
-            t = data.strip()
-            if t:
-                self.text.append(t + " ")
+        if self._ignore:
+            return
+        t = data.strip()
+        if t:
+            self.text.append(t + " ")
+            if self._in_main:
+                self.main.append(t + " ")
+
+    def content(self) -> str:
+        """The <main>/<article> text when the page has one, else the whole page.
+
+        Falling back to the whole page matters: plenty of sites have neither
+        tag, and an empty body would cost the source its slot.
+        """
+        main = "".join(self.main)
+        return main if main.strip() else "".join(self.text)
 
 # Measured: a bare "Mozilla/5.0" is rejected with 403 by several sites that
 # accept a full browser header set. It does not defeat Cloudflare-class blocks
@@ -140,7 +187,7 @@ def _read_url(url: str, max_chars: int) -> str:
             
         parser = _PageExtractor()
         parser.feed(html)
-        text = "".join(parser.text)
+        text = parser.content()
         
         lines = [line.strip() for line in text.split("\n")]
         text = "\n".join(line for line in lines if line)
@@ -452,6 +499,12 @@ def run(query: str, num_results: int = MIN_RESULTS) -> dict:
     # Measured: ~25% of pages answer 403 regardless of headers. Sources whose
     # body arrived are ranked first so a blocked site costs an extra fetch, not
     # a slot - otherwise the answer rests on a 300-char snippet.
+    #
+    # Ranking the survivors by how many of the query's words they never say was
+    # tried and MEASURED USELESS: over four failing queries it left the kept set
+    # identical three times and merely reordered the same three domains once.
+    # The candidates the provider returns either contain the answer or they do
+    # not; reordering three that do not changes nothing.
     pairs = sorted(zip(picked, pages), key=lambda rp: not rp[1])[:n]
 
     results, total = [], 0
@@ -483,10 +536,11 @@ def run(query: str, num_results: int = MIN_RESULTS) -> dict:
                         "nothing was found. Do NOT answer from prior knowledge "
                         "and do NOT invent results."),
         }
-    return {
+    out = {
         "status": "ok",
         "query": query,
         "provider": provider,
         "results": results,
         "source_count": len(results),
     }
+    return out
