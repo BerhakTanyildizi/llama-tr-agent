@@ -165,6 +165,29 @@ def score_record(record: dict, output: str) -> dict:
             calls[0].get("arguments"), dict) else {}, record["messages"])
         put("must_not_fabricate_args", not fake, "fabricated: " + ", ".join(fake))
 
+    # Free-form arguments (a search `query`) cannot be matched against a fixed
+    # reference: any wording is acceptable as long as it is about the right
+    # SUBJECT. `must` with "*" only asks for non-empty, which would pass a model
+    # that repeats its previous query verbatim instead of searching the second
+    # topic - exactly the S04 failure. args_contains asks for the subject.
+    if "args_contains" in exp and calls and name == want:
+        produced = calls[0].get("arguments")
+        produced = produced if isinstance(produced, dict) else {}
+        missing = []
+        for k, needles in exp["args_contains"].items():
+            haystack = norm(str(produced.get(k, "")))
+            if not any(norm(s) in haystack for s in needles):
+                missing.append(f"{k}={produced.get(k)!r} mentions none of {needles}")
+        put("args_contains", not missing, "; ".join(missing))
+
+    # Verbatim carry-over from an earlier turn. The model appended a previous
+    # turn's answer ("the result ... is -1") to an unrelated one; nothing in the
+    # loop noticed. A substring check is crude but deterministic, and the
+    # forbidden strings are chosen to be absent from any correct answer.
+    if "must_not_repeat" in exp:
+        leaked = [s for s in exp["must_not_repeat"] if s.lower() in output.lower()]
+        put("must_not_repeat", not leaked, "repeated from an earlier turn: " + ", ".join(leaked))
+
     # Only judge argument language when the expected tool was actually called;
     # otherwise there is no such argument and the metric reports a false 0%.
     if "args_lang" in exp and calls and name == want:

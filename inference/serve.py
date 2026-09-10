@@ -59,10 +59,47 @@ class Model:
         """For context budget tracking. Not an estimate - the model's own tokenizer."""
         return len(self._request("/tokenize", {"content": text}, timeout=30)["tokens"])
 
+    def _stream(self, body: dict, on_token) -> dict:
+        """Server-sent events -> one on_token(piece) per chunk.
+
+        At ~40 tok/s a 300-token answer is eight seconds of silence, and the
+        wait is the whole answer: nothing else is happening. Streaming does not
+        make the model faster, it makes the latency visible instead of dead.
+
+        The return shape is identical to the buffered path, so the caller keeps
+        working unchanged whether it passes on_token or not.
+        """
+        body = {**body, "stream": True}
+        req = urllib.request.Request(
+            self.url + "/completion", data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "text/event-stream"})
+        parts, timings = [], {}
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                for raw in r:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue                      # keep-alives and blank lines
+                    try:
+                        chunk = json.loads(line[5:].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    piece = chunk.get("content") or ""
+                    if piece:
+                        parts.append(piece)
+                        on_token(piece)
+                    if chunk.get("stop"):
+                        timings = chunk.get("timings") or timings
+        except urllib.error.URLError as e:
+            raise ServerUnavailable(f"cannot reach llama-server ({self.url}): {e}\n"
+                                    f"start it with:\n{START_COMMAND}") from None
+        return {"text": "".join(parts), "timings": timings}
+
     def generate(self, prompt: str, max_tokens: int = 768, grammar: str | None = None,
                 stop: list[str] | None = None, temperature: float = 0.5,
                 top_k: int = 40, top_p: float = 0.9,
-                repeat_penalty: float = 1.1, repeat_last_n: int = 768) -> dict:
+                repeat_penalty: float = 1.1, repeat_last_n: int = 768,
+                on_token=None) -> dict:
         """Sampling defaults are for CHAT, not for measurement.
 
         At temperature 0 the agent locked into repeating one sentence verbatim
@@ -82,5 +119,7 @@ class Model:
                 "cache_prompt": True, "stop": stop or []}
         if grammar:
             body["grammar"] = grammar
+        if on_token is not None:
+            return self._stream(body, on_token)
         c = self._request("/completion", body)
         return {"text": c["content"], "timings": c.get("timings", {})}

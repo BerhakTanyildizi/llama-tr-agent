@@ -4,7 +4,7 @@ Spec Bölüm 5.3 ve 5.4'ün gerektirdiği değerlendirme katmanı.
 
 ## test_set.jsonl
 
-**79 kayıt, elle yazıldı.** 24'ü eğitimde **GÖRÜLMEMİŞ** tool şemaları üzerine
+**86 kayıt, elle yazıldı.** 26'sı eğitimde **GÖRÜLMEMİŞ** tool şemaları üzerine
 kurulu. Eğitim verisinden ayrı tutulur, asla eğitime karıştırılmaz.
 
 **Neden gerekli:** Modelin gerçekten "JSON şema → doğru çağrı" mantığını mı
@@ -28,6 +28,7 @@ Kategori dağılımı (`validate_test_set.py` her koşuda yazdırır):
 | `explicit_search` / `query_language` | 4 / 3 | açık arama isteği / sorgu dili |
 | `multi_call` / `multi_turn` | 2 / 3 | tek turda iki çağrı / takip sorusu |
 | `user_language_edge` | 2 | kısa/karışık mesajda dil tespiti |
+| `compound_request` | 7 | **tek mesajda birden fazla görev** — hepsi karşılanıyor mu |
 
 Kayıt şeması ve puanlama kuralları: **`test_set_SEMA.md`**.
 
@@ -42,7 +43,7 @@ repoya taşındı.
 
 ## Dosyalar
 
-- `test_set.jsonl` — 79 kayıtlık tutulmuş (held-out) set.
+- `test_set.jsonl` — 86 kayıtlık tutulmuş (held-out) set.
 - `test_set_SEMA.md` — kayıt şeması + puanlama kuralları.
 - `validate_test_set.py` — yapısal denetim: şema/tip/enum uyumu, zorunlu
   parametre kapsaması, rol sırası, `ipython` çift kodlaması, eğitim sızıntısı,
@@ -70,6 +71,25 @@ taslaktı. Ölçüm yapılmadan **önce** merge edilmiş model, quantize pipelin
 tarafından silindi. Dolayısıyla buradaki tüm sayılar **mutlak**tır,
 kuantizasyon öncesine göre karşılaştırmalı değildir: "Q4_K_M ne kaybettirdi?"
 sorusu bu repoda cevapsızdır.
+
+## `compound_request` (yeni) — ve tek atışlık eval'in sınırı
+
+Canlıda görülen iki hatadan doğdu: *"hava durumu, sonra 4-5 kaç?"* → aritmetik
+kafadan cevaplandı; *"tensor ve RAG'i ara"* → RAG hiç aranmadı ve hiç
+bahsedilmedi.
+
+Eval tek atışlıktır, döngüyü koşturmaz — "istek turun sonunda tam karşılandı mı"
+sorusunu doğrudan ölçemez, çünkü ikinci aracı bir sonraki iterasyonda çağırmak da
+geçerlidir. Bu yüzden her senaryo **iki kayıt**: taze olan ilk çağrıyı ölçer
+(çağrı sayısı **rapor**), devam kaydı ilk gözlemi geçmişe koyup tek doğru hamle
+bırakır (**strict**). Ayrıntı: `test_set_SEMA.md`.
+
+İki yeni puanlama alanı geldi:
+
+- **`args_contains`** — serbest metinli argümanın KONUSUNU arar. `must: {"query": "*"}`
+  yalnızca boş-değil der ve modelin önceki sorgusunu tekrarlamasını da geçirirdi.
+- **`must_not_repeat`** — çıktıda geçmemesi gereken dizeler. Önceki turun
+  cevabının alakasız bir tura taşınmasını yakalar.
 
 ## ⚠️ Eval ajanın tam promptunu ölçmez
 

@@ -78,6 +78,13 @@ def run(expression: str, unit: str | None = None) -> dict:
         "result": round(value, 10) if isinstance(value, float) else value,
         "unit": unit or "unspecified"}
     if not unit:
-        out["message"] = ("No unit was given, so this number means nothing on its own. "
-                        "Say what it counts, or call again with the unit.")
+        # Addressed to the MODEL, and deliberately not phrased as a request.
+        # The first wording said "Say what it counts, or call again with the
+        # unit", and the model relayed it to the user verbatim: "Please provide
+        # the unit for this number so that we can understand its meaning." For
+        # "4 - 5" there is no unit to provide, so that asks the user for
+        # something that does not exist. The note now tells the model what to do
+        # in both cases and is harmless if it leaks into the answer anyway.
+        out["message"] = ("No unit was given, and none may exist. If the result counts "
+                        "something, name it; if it is a pure number, state it plainly.")
     return out

@@ -93,12 +93,23 @@ def build(schemas: list[dict] | None = None) -> str:
     # only accepted "<tool_call>...", which forced a tool call on every single
     # generation - measured: with the grammar on, the negative-control record
     # (a question needing no tool) failed because a call was unavoidable.
-    # The two branches are decidable from the first character: a call starts
-    # with '<', prose never contains one. Repetition is allowed because the
-    # system prompt says "one or more functions" and two records need two calls.
+    # Repetition is allowed because the system prompt says "one or more
+    # functions" and two records need two calls.
+    #
+    # `prose` bans '<' only in the FIRST position, which is all the root needs
+    # to stay decidable - a tool call always begins with '<', so one character
+    # settles the branch. The previous rule was `[^<]+`, banning '<' anywhere,
+    # and that made the character unrepresentable in an answer. Measured live:
+    # asked to write "is 3 less than 5" as an inequality, the model produced
+    # "3 <= 5" with the grammar on and "3 < 5" with it off - not a formatting
+    # quirk but a different mathematical claim, and it looked like a model
+    # error. Code, generics and markup were unwritable for the same reason.
+    #
+    # Spelled out as a character alternation rather than '.', so it does not
+    # depend on whether '.' matches a newline: prose answers are multi-line.
     root = ('root ::= tool-call (ws-nl tool-call)* | prose\n'
             'tool-call ::= "<tool_call>" ws-nl call ws-nl "</tool_call>"\n'
-            'prose ::= [^<]+\n'
+            'prose ::= [^<] ( [^<] | "<" )*\n'
             'ws-nl ::= [ \\t\\n]*\n'
             "call ::= " + " | ".join(call_rules))
     return "\n".join([root, "", *rules, "", BASE]) + "\n"

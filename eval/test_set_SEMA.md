@@ -4,9 +4,10 @@
 İkisi de **aynı** kuralları uygulamak zorunda; aksi halde kuantizasyon öncesi/sonrası
 karşılaştırma geçersiz olur.
 
-Üreteç: `scratchpad/uret_test_set.py`, doğrulayıcı: `scratchpad/dogrula_test_set.py`.
-Dosya elle düzenlenmemeli — üreteç değiştirilip yeniden üretilmeli, sonra doğrulayıcı
-koşulmalı.
+⚠️ **Üreteç KAYBOLDU.** `scratchpad/uret_test_set.py` ve ilk doğrulayıcı, oturumla
+birlikte silinen bir dizindeydi. Artık **`test_set.jsonl`'in kendisi kaynaktır**:
+elle düzenlenir ve her düzenlemeden sonra `python eval/validate_test_set.py`
+koşulur. Doğrulayıcı bu yüzden repoya taşındı.
 
 ## Kayıt şeması
 
@@ -41,6 +42,8 @@ satırına **gerçek tarih** geçilmeli (CLAUDE.md md. 6).
 | `must_not_fabricate_content` | Gözlemde olmayan bilgi cevaba eklenmemeli |
 | `args_lang` | `{argüman: dil}` — argüman değerinin beklenen dili |
 | `expected_call_count` | Beklenen çağrı sayısı |
+| `args_contains` | `{argüman: [alt dize]}` — üretilen değer bunlardan **birini** içermeli. Serbest metinli argümanlar (arama `query`'si) için: hangi kelimelerle arandığı değil, hangi KONUDA arandığı ölçülür. `must` içindeki `"*"` yalnızca boş-değil der ve modelin önceki sorgusunu tekrarlamasını da geçirirdi (S04). |
+| `must_not_repeat` | `[alt dize]` — çıktıda bu dizelerin **hiçbiri** geçmemeli. Önceki turun cevabının alakasız bir tura taşınmasını yakalar (S07). Kaba ama deterministik; dizeler doğru bir cevapta bulunmayacak şekilde seçilir. |
 
 ## Puanlama kuralları
 
@@ -92,8 +95,36 @@ kendi JSON üretme yeteneği ölçülür). `eval_post_quant.py` her iki modda ko
 şemaları için ayrı ayrı raporlanmalı. Aradaki büyük fark, modelin şema okumayı
 değil eğitimdeki tool isimlerini ezberlediğini gösterir.
 
-- görülmemiş şemalı kayıt: **19**
-- görülen şemalı kayıt: **46**
+- görülmemiş şemalı kayıt: **26**
+- görülen şemalı kayıt: **60**
+
+`calculate` eğitimde hiç yoktu, dolayısıyla onu içeren her demet `tools_seen: false`
+sayılır. `reasoning` (5) ve `compound_request`'in iki kaydı (S01, S02) bu yüzden
+"görülmemiş" kovasında — şema genellemesini ölçmedikleri hâlde. Diğer beş
+`compound_request` kaydı bilerek üç eğitilmiş tool ile kuruldu ki bu kova
+gereksiz şişmesin.
+
+## `compound_request` — tek atışlık eval'in sınırı
+
+Bu kategori, canlıda görülen iki hatadan doğdu: *"hava durumu, sonra 4-5 kaç?"*
+sorusunda aritmetik kafadan cevaplandı, *"tensor ve RAG'i ara"* sorusunda RAG hiç
+aranmadı ve hiç bahsedilmedi.
+
+Eval **tek atışlıktır**: bir üretim yapar ve onu puanlar, döngüyü koşturmaz. Bu
+yüzden "kullanıcının isteği turun SONUNDA tam karşılandı mı" sorusunu doğrudan
+ölçemez — model ilk aracı çağırıp ikinciyi bir sonraki iterasyonda çağırabilir ve
+bu da geçerli bir stratejidir.
+
+Çözüm, her senaryoyu **iki kayıt** olarak kurmaktır:
+
+- **taze kayıt** (S01, S03, S05) — yalnızca ilk çağrının doğruluğunu ölçer.
+  `expected_call_count` burada **rapor**: sıralı strateji de doğrudur, tek doğru
+  davranış iddia edilemez (kural 8).
+- **devam kaydı** (S02, S04, S06) — ilk gözlem geçmişe **konmuş** hâlde başlar,
+  geriye tek bir doğru hamle kalır. Burada **strict** puanlanır. Asıl ölçüm budur.
+
+S07 ayrı durur: önceki turun cevabı geçmişte, soru alakasız. `must_not_repeat` ile
+bayat içeriğin sızıp sızmadığı ölçülür.
 
 ## Kategoriler
 
@@ -112,6 +143,7 @@ değil eğitimdeki tool isimlerini ezberlediğini gösterir.
 | `query_language` | 3 | Türkçe soruya Türkçe arama sorgusu (**rapor**) |
 | `multi_call` | 2 | Çoklu tool gereken durumlar (**rapor**) |
 | `user_language_edge` | 2 | Kullanıcı İngilizce yazınca ne olur (**rapor**) |
+| `compound_request` | 7 | **Tek mesajda birden fazla görev**: hepsi karşılanıyor mu |
 
 `unseen_positive` içindeki 11 kayıt farklı **parametre şekillerini** sınar:
 tek zorunlu string, opsiyonel enum, zorunlu integer, hiç zorunlu parametre yok,

@@ -53,6 +53,19 @@ PLACEHOLDER_RE = re.compile(
     r"|[<\[]|\.\.\."
     r"|\b(your|users?'?s?|placeholder|example|specify|insert)\b", re.I)
 
+# "digit operator digit", with ISO dates and year ranges removed first.
+# ADVISORY ONLY - deliberately not a gate. Measured over the 7549 unique user
+# messages in the training data: the naive form fires on 4.85% of them and this
+# narrowed form still fires on 1.44%, almost all false positives (phone numbers,
+# "the digits 1-9", pasted passages, "MATLAB code to calculate ..."). Blocking a
+# final answer on that would refuse roughly one legitimate turn in seventy.
+# It also MISSES arithmetic phrased in words - "17 ile 23'un carpimi kactir?"
+# has no operator at all - so a gate built on it would be both noisy and leaky.
+# The behaviour is left to the directive; S02 in the test set measures whether
+# that is enough, and this warning is how the failure becomes visible meanwhile.
+DATE_LIKE_RE = re.compile(r"\d{4}-\d{1,2}(-\d{1,2})?|\b(19|20)\d{2}\s*[-\u2013]\s*(19|20)\d{2}\b")
+ARITHMETIC_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)?\s*[-+*/\u00d7\u00f7]\s*\d+(?:\.\d+)?(?![\d.])")
+
 MAX_ITERATIONS = 6
 CONTEXT_BUDGET = 0.70      # of n_ctx; the rest is left for generation
 PRUNED_NOTE = "Earlier result removed to save context."
@@ -94,11 +107,39 @@ def _grounded(value: str, haystack: str) -> bool:
     return any(w in haystack for w in re.findall(r"\w{3,}", v))
 
 
+class _ProseStream:
+    """Forwards a generation to `write`, but only when it turns out to be prose.
+
+    The grammar guarantees a tool call starts with '<' and a plain answer never
+    does, so the FIRST non-whitespace character settles it. That one character
+    is why the tool_call JSON never reaches the screen: text is held back until
+    the branch is known, then either released and streamed, or dropped for good.
+    """
+
+    def __init__(self, write):
+        self._write = write
+        self._prose = None          # None -> undecided
+        self._held = ""
+
+    def __call__(self, piece: str) -> None:
+        if self._prose is False:
+            return
+        if self._prose is None:
+            self._held += piece
+            if not self._held.strip():
+                return              # still only whitespace, cannot decide yet
+            self._prose = not self._held.lstrip().startswith("<")
+            if not self._prose:
+                return
+            piece, self._held = self._held, ""
+        self._write(piece)
+
+
 class Orchestrator:
     def __init__(self, model: serve.Model | None = None, use_grammar: bool = True,
                 max_iterations: int = MAX_ITERATIONS, verbose: bool = False,
                 variant: str = prompts.DEFAULT_VARIANT, directive: bool = True,
-                language: str | None = prompts.DEFAULT_LANGUAGE):
+                language: str | None = prompts.DEFAULT_LANGUAGE, on_text=None):
         self.model = model or serve.Model()
         # Grammar is ON by default. It was off while the agent had only the three
         # tools it was trained on, where the model produced 100% valid JSON
@@ -112,6 +153,9 @@ class Orchestrator:
         self.budget = int(self.model.n_ctx * CONTEXT_BUDGET)
         self.directive = directive
         self.language = language
+        # When set, prose is streamed to this callback as it is generated.
+        # None keeps the buffered behaviour, which is what the eval wants.
+        self.on_text = on_text
         # The system prompt names ONE language, chosen from the configured mode
         # rather than per turn: it is the cached prefix, so a per-turn clause
         # would throw away the KV cache every time the language flipped. With
@@ -147,20 +191,40 @@ class Orchestrator:
 
     # -- parsing -----------------------------------------------------------
     @staticmethod
-    def extract_call(text: str) -> tuple[str | None, dict, str | None]:
-        """Returns (tool name, arguments, error). All None/empty means final answer."""
-        m = TOOL_CALL_RE.search(text)
-        if not m:
+    def extract_calls(text: str) -> list[tuple[str | None, dict, str | None]]:
+        """One (name, arguments, error) entry per <tool_call> block, in order.
+
+        An empty list means the model wrote a final answer instead of calling.
+
+        findall, NOT search. The grammar has allowed `tool-call (ws-nl
+        tool-call)*` since the multi-call fix, and the eval parses every block
+        with finditer - but this parser read only the FIRST block and dropped
+        the rest with no log, no observation and no error. The model never
+        learned its second call had been eaten. Observed live: "use 2 search
+        tool" ran one search and answered half the question, which read as a
+        model failure and was a harness bug (the same shape as the three
+        grammar traps in CLAUDE.md item 14).
+
+        A malformed block becomes an entry carrying `error` rather than
+        discarding the whole batch: the well-formed calls beside it are still
+        worth dispatching, and the model is told exactly which one was broken.
+        """
+        blocks = TOOL_CALL_RE.findall(text)
+        if not blocks:
             # An opening tag with no closing one would otherwise pass silently.
             if "<tool_call>" in text:
-                return None, {}, "Malformed tool_call: the block was never closed."
-            return None, {}, None
-        try:
-            call = json.loads(m.group(1))
-        except json.JSONDecodeError as e:
-            return None, {}, f"Malformed tool_call JSON: {e}"
-        args = call.get("arguments")
-        return call.get("name"), args if isinstance(args, dict) else {}, None
+                return [(None, {}, "Malformed tool_call: the block was never closed.")]
+            return []
+        calls = []
+        for raw in blocks:
+            try:
+                call = json.loads(raw)
+            except json.JSONDecodeError as e:
+                calls.append((None, {}, f"Malformed tool_call JSON: {e}"))
+                continue
+            args = call.get("arguments")
+            calls.append((call.get("name"), args if isinstance(args, dict) else {}, None))
+        return calls
 
     def _ungrounded(self, name: str, args: dict, messages: list[dict]) -> list[str]:
         """Arguments the model invented instead of asking for. See decision 2.
@@ -170,15 +234,31 @@ class Orchestrator:
         one turn launders itself into "grounded" in the next.
         """
         must_ground = tools.grounded_params(name)
+        required = tools.required_params(name)
         said = _norm(" ".join(m["content"] for m in messages
                             if m["role"] in ("user", "ipython")))
         problems = []
-        for k, v in args.items():
+        for k, v in list(args.items()):
             if not isinstance(v, str) or not v.strip():
                 continue
             if PLACEHOLDER_RE.search(v):
-                problems.append(f"'{k}' is a placeholder ({v!r}), not a real value")
-            elif k in must_ground and not _grounded(v, said):
+                if k in required:
+                    problems.append(f"'{k}' is a placeholder ({v!r}), not a real value")
+                else:
+                    # A placeholder in an OPTIONAL slot is not a fabrication, it
+                    # is an empty hand: the model was told to fill the field and
+                    # had nothing real for it. Blocking the whole call there is
+                    # wrong. calculate's `unit` is the live case - it is optional,
+                    # its description says "always give it", and "4 - 5" has no
+                    # unit, so the model reaches for "n/a" / "none" / "null",
+                    # all three of which match PLACEHOLDER_RE. That refused
+                    # correctly-formed arithmetic, the exact call we want it to
+                    # make. Dropping the argument lets the tool answer and emit
+                    # its own "say what it counts" message instead.
+                    del args[k]
+                    self._log(f"dropped optional {name}.{k}={v!r} (placeholder)")
+                continue
+            if k in must_ground and not _grounded(v, said):
                 problems.append(f"'{k}' was set to {v!r}, which the user never mentioned")
         return problems
 
@@ -216,10 +296,66 @@ class Orchestrator:
         if not self.verbose:
             return
         seen = " ".join(m["content"] for m in self.history if m["role"] == "ipython")
-        unseen = {n for n in re.findall(r"\d[\d.,]*", answer)
+        # rstrip: the character class swallows the sentence's full stop, so
+        # "27.4." would be reported and would not match "27.4" in the observation.
+        unseen = {n for n in (m.rstrip(".,") for m in re.findall(r"\d[\d.,]*", answer))
                   if len(n) > 2 and n not in seen}
         if unseen:
             self._log(f"not in any observation: {', '.join(sorted(unseen)[:6])}")
+
+        # A number that appears in an EARLIER ANSWER but in no observation is
+        # the carry-over case: the model restating something it said in a turn
+        # that never asked for it. Observed live, an answer about tensors ended
+        # with "The result of the calculation 4-5 is -1" from the turn before.
+        #
+        # No length filter here. Above, len > 2 keeps "3 sources" from firing on
+        # every turn; here the signal is "this exact number is in an old answer
+        # of mine and in none of my observations", which is specific enough on
+        # its own - and it has to be, because the observed leak was "-1".
+        earlier = " ".join(m["content"] for m in self.history[:-1]
+                           if m["role"] == "assistant")
+        carried = {n for n in (m.rstrip(".,") for m in re.findall(r"-?\d[\d.,]*", answer))
+                   if n and n != "-" and n in earlier and n not in seen}
+        if carried:
+            self._log("carried over from an earlier answer, in no observation: "
+                      + ", ".join(sorted(carried)[:6]))
+
+    def _check_arithmetic(self, user_message: str, used: set[str]) -> None:
+        """Warn when the user wrote a calculation and `calculate` was never called.
+
+        Advisory, --verbose only; see ARITHMETIC_RE for why this is not a gate.
+        Observed live: "weather in Elazig, then what is 4 - 5?" answered the
+        arithmetic in prose. The directive says to call the tool, but in a
+        compound request the arithmetic is a subordinate clause and loses -
+        the same shape as defect G, side instructions being dropped.
+        """
+        if not self.verbose or "calculate" in used:
+            return
+        if ARITHMETIC_RE.search(DATE_LIKE_RE.sub(" ", user_message)):
+            self._log("the user wrote a calculation and calculate was never called "
+                      "- the arithmetic in this answer is unverified")
+
+    def _generate(self, prompt: str, **kw) -> str:
+        """Single entry to the model: streams if asked, always logs timings."""
+        on_token = _ProseStream(self.on_text) if self.on_text else None
+        result = self.model.generate(prompt, on_token=on_token, **kw)
+        self._log_timings(result.get("timings") or {})
+        return result["text"].strip()
+
+    def _log_timings(self, t: dict) -> None:
+        """Prompt processing is this project's bottleneck, so show it.
+
+        Measured at ~175 tok/s against ~40 tok/s of generation: every 1000
+        tokens of context costs about six seconds on EVERY later turn. The
+        server reports it on every request and it used to be thrown away.
+        """
+        if not self.verbose or not t:
+            return
+        self._log("prompt {:.0f} tok {:.1f}s ({:.0f} t/s) · gen {:.0f} tok {:.1f}s ({:.0f} t/s)"
+                  .format(t.get("prompt_n", 0), t.get("prompt_ms", 0) / 1000,
+                          t.get("prompt_per_second") or 0,
+                          t.get("predicted_n", 0), t.get("predicted_ms", 0) / 1000,
+                          t.get("predicted_per_second") or 0))
 
     def _log(self, *a):
         if self.verbose:
@@ -229,58 +365,80 @@ class Orchestrator:
     def answer(self, user_message: str) -> str:
         self.history.append({"role": "user", "content": user_message})
         already_called: set[str] = set()
+        used_tools: set[str] = set()
 
         for step in range(self.max_iterations):
             last = step == self.max_iterations - 1
-            out = self.model.generate(self.build_prompt(self.history),
-                                    grammar=self.grammar, stop=[EOT])["text"].strip()
-            name, args, parse_error = self.extract_call(out)
+            out = self._generate(self.build_prompt(self.history),
+                                grammar=self.grammar, stop=[EOT])
+            calls = self.extract_calls(out)
 
-            if name is None and not parse_error:
+            if not calls:
                 self.history.append({"role": "assistant", "content": out})
                 self._check_numbers(out)
+                self._check_arithmetic(user_message, used_tools)
                 return out                                   # final answer
 
             self.history.append({"role": "assistant", "content": out})
             lang_name = LANGUAGE_NAMES[prompts.resolve_language(self.history, self.language)]
+            # Grounding is judged against the conversation as it stood BEFORE
+            # this generation. Every call in the batch was written without
+            # seeing any of their results, so a result produced here cannot be
+            # what grounded a sibling call.
+            prior = self.history[:-1]
+            if len(calls) > 1:
+                self._log(f"{len(calls)} calls in one generation")
 
-            if parse_error:
-                result = {"error": "invalid_tool_call", "message": parse_error}
-            elif (problems := self._ungrounded(name, args, self.history[:-1])):
-                # Do NOT dispatch: ask the user instead of acting on invented input.
-                result = {"error": "missing_information",
-                        "message": "Do not guess these values. Ask the user for them "
-                                    f"in {lang_name}: " + "; ".join(problems)}
-            elif (signature := f"{name}:{json.dumps(args, sort_keys=True)}") in already_called:
-                result = {"error": "repeated_call",
-                        "message": "You already made this exact call. Use the result "
-                                    "you already have, or answer the user."}
-            else:
-                already_called.add(signature)
-                result = tools.dispatch(name, args)
-                # Log the OUTCOME, not the request: the tool overrides some
-                # arguments (google_search treats num_results as a floor), so
-                # logging the model's args alone is misleading.
-                if "error" in result:
-                    outcome = f"error:{result['error']}"
-                elif "source_count" in result:
-                    provider = result.get("provider", "?").lstrip("_")
-                    outcome = f"{result['source_count']} sources ({provider})"
+            for i, (name, args, parse_error) in enumerate(calls):
+                if parse_error:
+                    result = {"error": "invalid_tool_call", "message": parse_error}
+                    outcome = "error:invalid_tool_call"
+                elif (problems := self._ungrounded(name, args, prior)):
+                    # Do NOT dispatch: ask the user instead of acting on invented input.
+                    result = {"error": "missing_information",
+                            "message": "Do not guess these values. Ask the user for them "
+                                        f"in {lang_name}: " + "; ".join(problems)}
+                    outcome = "blocked:missing_information"
+                elif (signature := f"{name}:{json.dumps(args, sort_keys=True)}") in already_called:
+                    result = {"error": "repeated_call",
+                            "message": "You already made this exact call. Use the result "
+                                        "you already have, or answer the user."}
+                    outcome = "blocked:repeated_call"
                 else:
-                    outcome = "ok"
-                self._log(f"{name}({args}) -> {outcome}")
+                    already_called.add(signature)
+                    used_tools.add(name)
+                    result = tools.dispatch(name, args)
+                    # Log the OUTCOME, not the request: the tool overrides some
+                    # arguments (google_search treats num_results as a floor), so
+                    # logging the model's args alone is misleading.
+                    if "error" in result:
+                        outcome = f"error:{result['error']}"
+                    elif "source_count" in result:
+                        provider = result.get("provider", "?").lstrip("_")
+                        outcome = f"{result['source_count']} sources ({provider})"
+                    else:
+                        outcome = "ok"
+                # Every branch is logged, not just the dispatched one. A call
+                # that is blocked or unparseable is exactly the case where the
+                # transcript looks like the model ignored the user.
+                self._log(f"{name or '?'}({args}) -> {outcome}")
 
-            if last:
-                result = dict(result, note="This was the last tool call allowed. "
-                                        f"Answer the user in {lang_name} now.")
-            self.history.append({"role": "ipython", "tool": name or "unknown",
-                                "content": self.observation(name or "unknown", result)})
+                # The note goes on the LAST observation of the batch only;
+                # once per call would tell the model "this was the last call"
+                # several times in a row.
+                if last and i == len(calls) - 1:
+                    result = dict(result, note="This was the last tool call allowed. "
+                                            f"Answer the user in {lang_name} now.")
+                self.history.append({"role": "ipython", "tool": name or "unknown",
+                                    "content": self.observation(name or "unknown", result)})
             self._fit_context(self.history)
 
         # Budget exhausted and still calling tools: one forced final answer.
-        out = self.model.generate(self.build_prompt(self.history), stop=[EOT])["text"].strip()
-        if self.extract_call(out)[0]:
+        out = self._generate(self.build_prompt(self.history), stop=[EOT])
+        if any(name for name, _, _ in self.extract_calls(out)):
             out = GIVE_UP[prompts.resolve_language(self.history, self.language)]
+            if self.on_text:
+                self.on_text(out)   # the suppressed call left the screen empty
         self.history.append({"role": "assistant", "content": out})
         return out
 
@@ -299,7 +457,16 @@ def main() -> None:
                     help="system prompt variant")
     ap.add_argument("--lang", default=prompts.DEFAULT_LANGUAGE or "auto", choices=["en", "tr", "auto"],
                     help="answer language; 'auto' mirrors the user (Turkish is suspended by default)")
+    ap.add_argument("--no-stream", action="store_true",
+                    help="wait for the whole answer instead of streaming it as it is written")
     a = ap.parse_args()
+
+    # Arrow-key history and line editing in the REPL. Importing the module is
+    # all it takes; input() picks it up. Absent on some builds, hence the guard.
+    try:
+        import readline           # noqa: F401
+    except ImportError:
+        pass
 
     try:
         # a.lang is passed through verbatim: "en"/"tr" pin the language, "auto"
@@ -307,12 +474,15 @@ def main() -> None:
         # It was previously parsed, printed in the banner and then dropped, so
         # --lang tr silently ran in English while the banner said lang=tr.
         agent = Orchestrator(serve.Model(a.url), use_grammar=not a.no_grammar,
-                            verbose=a.verbose, variant=a.variant, language=a.lang)
+                            verbose=a.verbose, variant=a.variant, language=a.lang,
+                            on_text=None if a.no_stream
+                                    else lambda piece: print(piece, end="", flush=True))
     except serve.ServerUnavailable as e:
         raise SystemExit(str(e))
 
     print(f"n_ctx={agent.model.n_ctx}  context budget={agent.budget} tokens  "
-        f"grammar={'on' if agent.grammar else 'off'}  prompt={a.variant}  lang={a.lang}")
+        f"grammar={'on' if agent.grammar else 'off'}  prompt={a.variant}  lang={a.lang}  "
+        f"stream={'off' if a.no_stream else 'on'}")
     print("Type your question (Ctrl+D to quit, /reset to clear the history).\n")
     while True:
         try:
@@ -326,8 +496,23 @@ def main() -> None:
             agent.reset()
             print("history cleared\n")
             continue
-        print(f"agent> {agent.answer(line)}\n")
-        
+        # A failed turn must not take the conversation with it: the history is
+        # the expensive part, and losing it to one timeout is worse than the
+        # timeout. Ctrl+C now cancels the turn rather than the session.
+        try:
+            if agent.on_text:
+                print("agent> ", end="", flush=True)
+                agent.answer(line)
+                print("\n")
+            else:
+                print(f"agent> {agent.answer(line)}\n")
+        except KeyboardInterrupt:
+            print("\n[cancelled - history kept]\n")
+        except serve.ServerUnavailable as e:
+            print(f"\n[{e}]\n", file=sys.stderr)
+        except Exception as e:                       # noqa: BLE001 - the REPL must survive
+            print(f"\n[{type(e).__name__}: {e}]\n", file=sys.stderr)
+
 
 
 if __name__ == "__main__":

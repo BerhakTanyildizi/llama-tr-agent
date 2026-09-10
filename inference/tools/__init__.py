@@ -34,6 +34,19 @@ def grounded_params(name: str) -> frozenset[str]:
     return getattr(mod, "GROUNDED_PARAMS", frozenset()) if mod else frozenset()
 
 
+def required_params(name: str) -> frozenset[str]:
+    """Parameters the schema marks required.
+
+    The orchestrator needs this to tell two placeholders apart: one sitting in a
+    required slot is a fabrication and must block the call, while one in an
+    optional slot just means the model had nothing to put there.
+    """
+    mod = REGISTRY.get(name)
+    if not mod:
+        return frozenset()
+    return frozenset(mod.SCHEMA["function"]["parameters"].get("required", []))
+
+
 def validate(name: str, args: dict) -> str | None:
     """Schema validation. Returns an explanation on failure, None on success.
 
