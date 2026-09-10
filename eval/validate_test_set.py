@@ -24,6 +24,7 @@ TRAIN = [ROOT / "training/data/train.jsonl", ROOT / "training/data/eval.jsonl"]
 INTENTIONAL_DRIFT = {
     "get_weather": "days_ahead added for 'tomorrow' / 'in N days' questions",
     "calculate": "tool added after training; the model cannot do arithmetic reliably",
+    "search_notes": "tool added after training; local notes retrieval",
 }
 
 TYPES = {"string": str, "integer": int, "number": (int, float),

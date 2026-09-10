@@ -12,26 +12,26 @@
 Decisions that came out of measurement rather than design:
 
 1. SYSTEM PROMPT VARIANT: see inference/prompts.py. V2 won the offline eval
-   (93% vs V1's 90%, wrong_tool_trap 5/5 vs 3/5) but failed in live use by
-   suppressing an explicit search request and then inventing an answer. V3 adds
-   two escape hatches for that. The asymmetry is deliberate and was the user's
-   call: an unnecessary search costs latency, a skipped one costs a wrong answer.
+    (93% vs V1's 90%, wrong_tool_trap 5/5 vs 3/5) but failed in live use by
+    suppressing an explicit search request and then inventing an answer. V3 adds
+    two escape hatches for that. The asymmetry is deliberate and was the user's
+    call: an unnecessary search costs latency, a skipped one costs a wrong answer.
 
 2. ARGUMENT GROUNDING (_ungrounded) IS A REQUIRED LAYER, NOT A NICETY. Both
-   prompt variants failed the same way: "Hava nasıl?" produced
-   location='Ankara', and "Ankara'dan tren var mı?" produced
-   destination="user's destination" with date='2022-03-15'. The model knows it
-   does not know - "user's destination" is a placeholder - and fills the slot
-   anyway instead of asking. Prompting does not fix this, so it is enforced here.
+    prompt variants failed the same way: "Hava nasıl?" produced
+    location='Ankara', and "Ankara'dan tren var mı?" produced
+    destination="user's destination" with date='2022-03-15'. The model knows it
+    does not know - "user's destination" is a placeholder - and fills the slot
+    anyway instead of asking. Prompting does not fix this, so it is enforced here.
 
 3. OBSERVATIONS USE THE `ipython` ROLE AND ARE DOUBLE-ENCODED. The training data
-   wraps the tool response in a JSON string, quotes and literal \\n included.
-   It is an artifact of the Hermes conversion, but the model learned that exact
-   shape; not reproducing it puts the model off-distribution.
+    wraps the tool response in a JSON string, quotes and literal \\n included.
+    It is an artifact of the Hermes conversion, but the model learned that exact
+    shape; not reproducing it puts the model off-distribution.
 
 4. CONTEXT IS TRIMMED FOR LATENCY, NOT MEMORY. Measured: n_ctx=8192 uses only
-   544 MiB of KV cache with ~2.7 GB free, so memory is not the constraint.
-   Prompt processing at ~175 tok/s is: every 1000 context tokens costs ~6 s.
+    544 MiB of KV cache with ~2.7 GB free, so memory is not the constraint.
+    Prompt processing at ~175 tok/s is: every 1000 context tokens costs ~6 s.
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ import json, re, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from inference import prompts, serve, tools                     # noqa: E402
+from inference import prompts, serve, session, tools            # noqa: E402
 from inference.grammar import generate_gbnf                     # noqa: E402
 
 # --- prompt building --------------------------------------------------------
@@ -139,7 +139,8 @@ class Orchestrator:
     def __init__(self, model: serve.Model | None = None, use_grammar: bool = True,
                 max_iterations: int = MAX_ITERATIONS, verbose: bool = False,
                 variant: str = prompts.DEFAULT_VARIANT, directive: bool = True,
-                language: str | None = prompts.DEFAULT_LANGUAGE, on_text=None):
+                language: str | None = prompts.DEFAULT_LANGUAGE, on_text=None,
+                profile: tuple[str, ...] = ()):
         self.model = model or serve.Model()
         # Grammar is ON by default. It was off while the agent had only the three
         # tools it was trained on, where the model produced 100% valid JSON
@@ -153,6 +154,9 @@ class Orchestrator:
         self.budget = int(self.model.n_ctx * CONTEXT_BUDGET)
         self.directive = directive
         self.language = language
+        # Durable user facts, rendered beside the directive rather than in the
+        # cached prefix. Empty here, so eval and tests see the measured prompt.
+        self.profile = profile
         # When set, prose is streamed to this callback as it is generated.
         # None keeps the buffered behaviour, which is what the eval wants.
         self.on_text = on_text
@@ -179,7 +183,8 @@ class Orchestrator:
         # whole point (see prompts.final_directive). It is appended after the
         # cached prefix, so the system prompt's KV cache is untouched.
         if self.directive:
-            p += HEADER.format("system") + prompts.final_directive(messages, self.language) + EOT
+            p += HEADER.format("system") + prompts.final_directive(
+                messages, self.language, self.profile) + EOT
         return p + HEADER.format("assistant")   # left open: the model speaks next
 
     @staticmethod
@@ -299,7 +304,7 @@ class Orchestrator:
         # rstrip: the character class swallows the sentence's full stop, so
         # "27.4." would be reported and would not match "27.4" in the observation.
         unseen = {n for n in (m.rstrip(".,") for m in re.findall(r"\d[\d.,]*", answer))
-                  if len(n) > 2 and n not in seen}
+                if len(n) > 2 and n not in seen}
         if unseen:
             self._log(f"not in any observation: {', '.join(sorted(unseen)[:6])}")
 
@@ -313,12 +318,12 @@ class Orchestrator:
         # of mine and in none of my observations", which is specific enough on
         # its own - and it has to be, because the observed leak was "-1".
         earlier = " ".join(m["content"] for m in self.history[:-1]
-                           if m["role"] == "assistant")
+                        if m["role"] == "assistant")
         carried = {n for n in (m.rstrip(".,") for m in re.findall(r"-?\d[\d.,]*", answer))
-                   if n and n != "-" and n in earlier and n not in seen}
+                if n and n != "-" and n in earlier and n not in seen}
         if carried:
             self._log("carried over from an earlier answer, in no observation: "
-                      + ", ".join(sorted(carried)[:6]))
+                    + ", ".join(sorted(carried)[:6]))
 
     def _check_arithmetic(self, user_message: str, used: set[str]) -> None:
         """Warn when the user wrote a calculation and `calculate` was never called.
@@ -333,7 +338,7 @@ class Orchestrator:
             return
         if ARITHMETIC_RE.search(DATE_LIKE_RE.sub(" ", user_message)):
             self._log("the user wrote a calculation and calculate was never called "
-                      "- the arithmetic in this answer is unverified")
+                    "- the arithmetic in this answer is unverified")
 
     def _generate(self, prompt: str, **kw) -> str:
         """Single entry to the model: streams if asked, always logs timings."""
@@ -352,10 +357,10 @@ class Orchestrator:
         if not self.verbose or not t:
             return
         self._log("prompt {:.0f} tok {:.1f}s ({:.0f} t/s) · gen {:.0f} tok {:.1f}s ({:.0f} t/s)"
-                  .format(t.get("prompt_n", 0), t.get("prompt_ms", 0) / 1000,
-                          t.get("prompt_per_second") or 0,
-                          t.get("predicted_n", 0), t.get("predicted_ms", 0) / 1000,
-                          t.get("predicted_per_second") or 0))
+                .format(t.get("prompt_n", 0), t.get("prompt_ms", 0) / 1000,
+                        t.get("prompt_per_second") or 0,
+                        t.get("predicted_n", 0), t.get("predicted_ms", 0) / 1000,
+                        t.get("predicted_per_second") or 0))
 
     def _log(self, *a):
         if self.verbose:
@@ -415,7 +420,13 @@ class Orchestrator:
                         outcome = f"error:{result['error']}"
                     elif "source_count" in result:
                         provider = result.get("provider", "?").lstrip("_")
-                        outcome = f"{result['source_count']} sources ({provider})"
+                        # Naming the sources, not just counting them. "3 sources
+                        # (tavily)" gave no way to tell a news article from a
+                        # carrier's price table, and the answer differs entirely
+                        # by which three came back - the one thing the log hid.
+                        where = ", ".join(r.get("domain") or r.get("note", "?")
+                                        for r in result.get("results", []))
+                        outcome = f"{result['source_count']} sources ({provider}): {where}"
                     else:
                         outcome = "ok"
                 # Every branch is logged, not just the dispatched one. A call
@@ -459,6 +470,8 @@ def main() -> None:
                     help="answer language; 'auto' mirrors the user (Turkish is suspended by default)")
     ap.add_argument("--no-stream", action="store_true",
                     help="wait for the whole answer instead of streaming it as it is written")
+    ap.add_argument("--no-history", action="store_true",
+                    help="do not restore or record the conversation across runs")
     a = ap.parse_args()
 
     # Arrow-key history and line editing in the REPL. Importing the module is
@@ -480,10 +493,26 @@ def main() -> None:
     except serve.ServerUnavailable as e:
         raise SystemExit(str(e))
 
+    store = session.Session(enabled=not a.no_history)
+    agent.history.extend(store.load())
+    profile = session.Profile()
+    agent.profile = tuple(profile.load())
+
+    def show_memory() -> None:
+        facts = profile.load()
+        print("\n".join(f"  {i}. {f}" for i, f in enumerate(facts, 1))
+            if facts else "  (nothing remembered yet)")
+        print()
+
     print(f"n_ctx={agent.model.n_ctx}  context budget={agent.budget} tokens  "
         f"grammar={'on' if agent.grammar else 'off'}  prompt={a.variant}  lang={a.lang}  "
         f"stream={'off' if a.no_stream else 'on'}")
-    print("Type your question (Ctrl+D to quit, /reset to clear the history).\n")
+    if agent.history:
+        print(f"restored {len(agent.history)} messages from the previous session")
+    if agent.profile:
+        print(f"profile: {len(agent.profile)} remembered facts (/memory to see them)")
+    print("Type your question (Ctrl+D to quit, /reset clears the history,\n"
+        "/remember <fact>, /forget <n>, /memory manage what is remembered).\n")
     while True:
         try:
             line = input("you > ").strip()
@@ -494,11 +523,31 @@ def main() -> None:
             continue
         if line == "/reset":
             agent.reset()
+            store.mark_reset()
             print("history cleared\n")
+            continue
+        if line == "/memory":
+            show_memory()
+            continue
+        if line.startswith("/remember "):
+            agent.profile = tuple(profile.add(line[len("/remember "):]))
+            n = len(agent.profile)
+            print(f"remembered ({n} fact{'' if n == 1 else 's'})\n")
+            continue
+        if line.startswith("/forget "):
+            arg = line[len("/forget "):].strip()
+            dropped = profile.remove(int(arg)) if arg.isdigit() else None
+            if dropped is None:
+                print("usage: /forget <number from /memory>\n")
+                show_memory()
+                continue
+            agent.profile = tuple(profile.load())
+            print(f"forgot: {dropped}\n")
             continue
         # A failed turn must not take the conversation with it: the history is
         # the expensive part, and losing it to one timeout is worse than the
         # timeout. Ctrl+C now cancels the turn rather than the session.
+        turn_start = len(agent.history)
         try:
             if agent.on_text:
                 print("agent> ", end="", flush=True)
@@ -512,6 +561,10 @@ def main() -> None:
             print(f"\n[{e}]\n", file=sys.stderr)
         except Exception as e:                       # noqa: BLE001 - the REPL must survive
             print(f"\n[{type(e).__name__}: {e}]\n", file=sys.stderr)
+        finally:
+            # finally, not else: a cancelled turn keeps its history in memory,
+            # so the file has to agree with the screen.
+            store.append(agent.history[turn_start:])
 
 
 

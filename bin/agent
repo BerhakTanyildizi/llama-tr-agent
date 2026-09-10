@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Lazy launcher: bring llama-server up only if it is down, then open the REPL.
+#
+# The server outlives the REPL on purpose. Loading 4.6 GB costs ~30 s, so
+# quitting the chat and starting it again should not pay that twice; `agent
+# --stop` is how the VRAM is handed back.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/myagent"
+LLAMA_DIR="${AGENT_LLAMA_DIR:-$HOME/llama-bin/llama-b10632}"
+MODEL="${AGENT_MODEL:-$REPO/training/outputs/gguf/llama31-8b-tr-Q4_K_M.gguf}"
+URL="${AGENT_URL:-http://127.0.0.1:8080}"
+LOG="$DATA/llama-server.log"
+PIDFILE="$DATA/llama-server.pid"
+WAIT_SECONDS=180
+
+SERVER_FLAGS=(-c 8192 -np 1 -ngl 99 --device Vulkan1 -fa on
+            --cache-type-k q8_0 --cache-type-v q8_0 --host 127.0.0.1 --port 8080)
+
+up() { curl -sf --max-time 2 "$URL/props" >/dev/null 2>&1; }
+
+case "${1:-}" in
+    --stop)
+        if [[ -f "$PIDFILE" ]] && kill "$(cat "$PIDFILE")" 2>/dev/null; then
+            echo "llama-server stopped, VRAM released."
+        else
+            echo "llama-server is not running, or was not started by this launcher."
+        fi
+        rm -f "$PIDFILE"
+        exit 0
+        ;;
+    --server-log)
+        tail -n 40 "$LOG"
+        exit 0
+        ;;
+esac
+
+if ! up; then
+    [[ -x "$LLAMA_DIR/llama-server" ]] || { echo "no llama-server at $LLAMA_DIR" >&2; exit 1; }
+    [[ -f "$MODEL" ]] || { echo "no model at $MODEL" >&2; exit 1; }
+    mkdir -p "$DATA"
+    echo "llama-server is down, starting it (model load takes ~30 s)..."
+    (cd "$LLAMA_DIR" && LD_LIBRARY_PATH=".:${LD_LIBRARY_PATH:-}" \
+        nohup ./llama-server -m "$MODEL" "${SERVER_FLAGS[@]}" >"$LOG" 2>&1 &
+        echo $! >"$PIDFILE")
+
+    # Loud, not silent. --device Vulkan1 is an index, and an index moves when a
+    # driver or a reboot reorders the GPUs; that failure has to name itself
+    # rather than look like a hang.
+    for ((i = 0; i < WAIT_SECONDS; i++)); do
+        up && break
+        kill -0 "$(cat "$PIDFILE")" 2>/dev/null \
+            || { echo "llama-server died on startup:" >&2; tail -n 15 "$LOG" >&2; exit 1; }
+        sleep 1
+    done
+    up || { echo "llama-server was not healthy after ${WAIT_SECONDS}s:" >&2
+            tail -n 15 "$LOG" >&2; exit 1; }
+    echo "llama-server ready."
+fi
+
+exec "${AGENT_PYTHON:-python3}" "$REPO/inference/orchestrator.py" --url "$URL" "$@"

@@ -277,6 +277,33 @@ def resolve_language(messages: list[dict], force: str | None = None) -> str:
     return lang or "en"
 
 
-def final_directive(messages: list[dict], force: str | None = None) -> str:
-    """The last-moment directive, in the language resolve_language() picks."""
-    return DIRECTIVES[resolve_language(messages, force)]
+# Placed with the directive rather than in the system prompt, for the same
+# reason the length instruction is (item 11): this model follows what sits next
+# to the generation point, not what opened a ~1500-token prompt. It also keeps
+# /remember instant - a fact added mid-conversation would otherwise rewrite the
+# cached prefix and cost a full reprocess on the very next turn.
+#
+# No restriction on using the facts. The first version said "never recite them
+# back and never treat them as the question", written against a model that
+# opens every answer with "As I recall, your name is ...". But the one question
+# a profile exists to answer - "what is my name" - is answered BY reciting a
+# fact, so the clause forbade the behaviour it was added to support.
+# "told you" is avoided on purpose: it collides with "what did I just tell you",
+# which the model then answered from this list instead of the previous turn.
+PROFILE_BLOCK = "Background facts about the user, known from before this conversation:\n{}"
+
+
+def final_directive(messages: list[dict], force: str | None = None,
+                    profile: tuple[str, ...] = ()) -> str:
+    """The last-moment directive, in the language resolve_language() picks.
+
+    With no profile the text is byte-identical to what the eval measured.
+    """
+    directive = DIRECTIVES[resolve_language(messages, force)]
+    if not profile:
+        return directive
+    # Profile FIRST, directive last. With the order reversed the closing lines
+    # of the prompt were a list of facts about the user, so "What did I just
+    # tell you?" was answered with the profile instead of the previous turn.
+    return PROFILE_BLOCK.format(
+        "\n".join(f"- {fact}" for fact in profile)) + "\n\n" + directive

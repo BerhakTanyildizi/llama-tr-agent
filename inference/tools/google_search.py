@@ -40,6 +40,7 @@ MAX_SNIPPET_CHARS = 300
 MAX_TITLE_CHARS = 120
 MAX_URL_CHARS = 300
 MAX_PAGE_CHARS = 900     # per source
+MIN_BODY_CHARS = 200     # below this an extraction counts as failed, see _body()
 MAX_TOTAL_CHARS = 6000
 TIMEOUT = 12             # search request
 PAGE_TIMEOUT = 5         # one page fetch; kept low because N run in parallel
@@ -149,6 +150,36 @@ def _read_url(url: str, max_chars: int) -> str:
         return text
     except Exception:
         return ""
+
+
+def _body(result: dict, trust_provider: bool) -> str:
+    """The page text the model will actually read.
+
+    MEASURED: asked for the newest iPhone, Tavily handed back Wikipedia's table
+    of contents ("+ 1.1 Overview + 1.2 Supporting latest iOS version ...") as
+    the page body, while the lead sentence of that same page answered the
+    question outright - "As of September 2026, the most recent iPhone models
+    are the iPhone 18 Pro, iPhone 18 Pro Max and iPhone Duo". Of the three
+    bodies the model was given, two were navigation and advertising and the
+    only one that read like an answer was a stale 2024 page. It summarised that
+    one faithfully and reported an iPhone two generations old, which looked like
+    the model ignoring its sources when it was doing exactly the opposite.
+
+    So the provider's body is no longer taken on trust: _read_url goes first and
+    the provider's text is the fallback for pages the fetch cannot get (~25%
+    answer 403). _wikipedia is the exception - its body is the API's own intro
+    extract, already clean, and refetching the HTML would spend a request to
+    get less.
+    """
+    if trust_provider and result.get("page_content"):
+        return result["page_content"]
+    text = _read_url(result["url"], MAX_PAGE_CHARS)
+    fallback = result.get("page_content") or ""
+    # A near-empty extraction is a failed one - a JS-rendered page, a paywall -
+    # and the provider's text, chrome and all, still beats 32 characters.
+    if len(text) < MIN_BODY_CHARS and len(fallback) > len(text):
+        return fallback
+    return text or fallback
 
 
 def _domain(url: str) -> str:
@@ -411,13 +442,10 @@ def run(query: str, num_results: int = MIN_RESULTS) -> dict:
             break
 
     # Fetched in parallel: sequentially, worst-case latency was N x PAGE_TIMEOUT.
-    # Some providers (Wikipedia) hand back the article body already; fetching
-    # their URL again would cost a request and return worse text.
     if picked:
+        trust_provider = provider == "_wikipedia"       # see _body()
         with ThreadPoolExecutor(max_workers=len(picked)) as pool:
-            pages = list(pool.map(
-                lambda r: r.get("page_content") or _read_url(r["url"], MAX_PAGE_CHARS),
-                picked))
+            pages = list(pool.map(lambda r: _body(r, trust_provider), picked))
     else:
         pages = []
 
