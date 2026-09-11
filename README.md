@@ -1,8 +1,11 @@
 <div align="center">
 
-# 🇹🇷 Llama Turkish Function-Calling Agent
+# Llama Function-Calling Agent
 
 ### Llama-3.1-8B → QLoRA → GGUF → a tool-calling ReAct agent<br>running entirely on one 8 GB laptop GPU
+
+**The agent answers in English.** A Turkish path exists in the code, but it is unvalidated — see
+[Status](#-status) before relying on it.
 
 <p>
   <img src="https://img.shields.io/badge/base-Llama--3.1--8B--Instruct-6633cc?style=for-the-badge&logo=meta&logoColor=white" alt="base model">
@@ -16,7 +19,7 @@
   <img src="https://img.shields.io/badge/tools-5-blueviolet?style=flat-square" alt="tools">
   <img src="https://img.shields.io/badge/tests-114%20passing-success?style=flat-square" alt="tests">
   <img src="https://img.shields.io/badge/decoding-GBNF%20constrained-informational?style=flat-square" alt="decoding">
-  <img src="https://img.shields.io/badge/output-English%20(Turkish%20pinned%20off)-important?style=flat-square" alt="language">
+  <img src="https://img.shields.io/badge/output-English-important?style=flat-square" alt="language">
 </p>
 
 <table>
@@ -31,12 +34,15 @@
 </div>
 
 > [!IMPORTANT]
-> **The agent currently answers in English.** `DEFAULT_LANGUAGE = "en"`.
-> Every defect still open has the same shape — *works in English, fails in Turkish* — so the
-> language variable is pinned while the English baseline is measured. At this setting the prompt
-> does not mention Turkish **at all**: the system prompt's language clause follows the configured
-> language instead of naming both, so it can no longer contradict the last-moment directive.
-> Turkish is one flag away: `--lang tr` pins it, `--lang auto` mirrors the user.
+> **English is the only validated output language.** The fine-tune was trained with a Turkish subset and the
+> switch is still there — but every defect still open has the same shape, *works in English, fails in
+> Turkish*, and none of them has been fixed or re-measured. Turkish is an unfinished option, not a feature.
+>
+> With English pinned the prompt does not mention Turkish **at all**: the system prompt's language clause
+> follows the configured language instead of naming both, so it can no longer contradict the last-moment
+> directive.
+>
+> `DEFAULT_LANGUAGE = "en"` · `--lang tr` and `--lang auto` still work, at your own risk.
 
 ---
 
@@ -55,12 +61,16 @@
 
 Most function-calling fine-tunes are trained and evaluated in English. This project asks a narrower one:
 
-> Can a small, carefully-curated Turkish subset — about **2%** of the training mix — reliably steer a
-> model's *final, user-facing* answers into Turkish, without touching the English tool-calling
-> semantics that make up the rest, and without anything close to a large Turkish corpus?
+> Can a small, carefully-curated second-language subset — about **2%** of the training mix — reliably steer
+> a model's *final, user-facing* answers into that language, without touching the English tool-calling
+> semantics that make up the rest, and without anything close to a large corpus?
 
-The answer depends entirely on **how** that 2% is trained on, not just that it exists. That distinction
-drives most of what follows.
+Turkish was the second language, and the answer depends entirely on **how** that 2% is trained on, not just
+that it exists — that distinction drives most of what follows.
+
+**What actually shipped is the English agent.** The training question was answered at the model level (the
+eval below scores Turkish final turns), but the agent around it was only ever brought to a working standard
+in English. The Turkish path is left in the code, unfinished and unmeasured.
 
 ---
 
@@ -248,10 +258,10 @@ rewritten. Every tool name claimed as "unseen" was checked against all **2,985**
 training data; intuitive picks like `convert_currency`, `translate_text` and `find_restaurants` turned out
 to be present and were replaced.
 
-The set is written against **Turkish** final answers, because that is what the fine-tune was for. Production
-is pinned to English while the baseline is measured (see the note at the top) — the two settings are
-independent, and the eval deliberately measures the model's own tendency rather than the agent's configured
-one. Scored on the full set with the **grammar on**, which is how the agent runs:
+The set is written against **Turkish** final answers, because that is what the fine-tune was trained for.
+That is the one place Turkish is still measured: the eval scores the model's own tendency, deliberately, not
+the agent's configured behaviour — which is English. Scored on the full set with the **grammar on**, which is
+how the agent runs:
 
 | Metric | Score | |
 |:--|--:|:--|
@@ -721,7 +731,7 @@ Adding another provider means writing **one function** and listing it in `PROVID
 | Streaming output + timing readout | ✅ Done |
 | Persistent memory (`/remember` + session history) | ✅ Done |
 | One-command launcher (`bin/agent`) | ✅ Done |
-| Turkish output | ⏸️ **Pinned off** — English baseline first |
+| Turkish output | ⏸️ **Unvalidated** — the switch works, the behaviour behind it was never finished or re-measured |
 | Sequential call after an observation | ⛔ **Not reachable** — zero training support |
 | bfloat16 baseline comparison | ❌ **Not possible** — the merged bf16 model was deleted by the quantize pipeline before a baseline was taken |
 
@@ -729,6 +739,8 @@ Adding another provider means writing **one function** and listing it in `PROVID
 <summary><b>⚠️ Open defects, stated plainly</b></summary>
 
 <br>
+
+🔴 open · 🟡 partly closed · ⚪ Turkish-only, and therefore unmeasured
 
 | | defect | note |
 |:--|:--|:--|
