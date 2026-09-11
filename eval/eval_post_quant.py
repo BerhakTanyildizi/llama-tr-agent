@@ -4,7 +4,7 @@
 Talks to llama-server over HTTP. Server flags must match serve.py (q8_0 KV cache,
 flash attention, -ngl 99) or the comparison is meaningless.
 
-Scoring rules: eval/test_set_SEMA.md
+Scoring rules live in each record's `expect` and `scoring` fields.
 """
 from __future__ import annotations
 

@@ -1,51 +1,55 @@
 # tests/
 
-Harness testleri. **Sunucu, ağ ve harici bağımlılık gerektirmez** — saniyeler sürer.
+Harness tests. **No server, no network, no third-party package** — 114 tests in about a hundredth of a
+second.
 
 ```bash
-python -m unittest discover -s tests -v      # hepsi
-python -m unittest tests.test_grammar -v     # tek modül
+python -m unittest discover -s tests -v       # everything
+python -m unittest tests.test_grammar -v      # one module
 python -m unittest tests.test_tools.Calculate -v
 ```
 
-## Neden var
+## Why they exist
 
-`eval/` **modeli** ölçüyor. **Harness'ı** ölçen hiçbir şey yoktu — ve bu projede
-bulunan hataların çoğu harness hatası:
+`eval/` scores the **model**. Nothing scored the **harness** — and most of the bugs found in this project
+lived there:
 
-| hata | nasıl göründü |
-|---|---|
-| Parser ilk çağrıyı alıp kalanını sessizce attı | *"2 arama yap"* tek arama yaptı → model hatası sanıldı |
-| Grammar kökü yalnızca `<tool_call>` kabul ediyordu | Düz cevap üretilemiyordu → model "gereksiz tool çağırıyor" sanıldı |
-| Eval grammar'ı sabit dosyadan okuyordu | `unseen_positive` 0/11 → genelleme başarısız sanıldı |
-| `prose ::= [^<]+` | Model `3 < 5` yerine `3 ≤ 5` yazdı → model yanlış sanıldı |
-| Opsiyonel argümandaki yer tutucu çağrıyı engelledi | Doğru `calculate` çağrısı reddedildi |
-| Eval `arguments` string olunca karakterleri dolaştı | `extra:1, extra:7, extra:*` |
+| bug | how it looked |
+|:--|:--|
+| The parser took the first call and dropped the rest | *"use 2 searches"* ran one → read as a model failure |
+| The grammar root accepted only `<tool_call>` | A plain answer was impossible → read as over-triggering |
+| The eval loaded the grammar from a fixed file | `unseen_positive` scored 0/11 → read as failed generalization |
+| `prose ::= [^<]+` | The model wrote `3 ≤ 5` instead of `3 < 5` → read as bad arithmetic |
+| A placeholder in an *optional* slot blocked the call | A correctly built `calculate` call was refused |
+| The eval iterated a string argument's characters | `extra:1, extra:7, extra:*` in the report |
+| A retired observation still showed its tool call | The model learned searching was pointless and stopped |
 
-**Hepsi model hatası gibi göründü, hiçbiri değildi.** Buradaki her test, en az bir
-kez gerçekten yaşanmış bir hatayı kilitliyor.
+**Every one looked like the model failing. None of them was.** Each test here pins a bug that shipped at
+least once.
 
-## Modüller
+## Modules
 
-| dosya | kapsam |
-|---|---|
-| `test_orchestrator.py` | çağrı ayrıştırma (tek/çoklu/bozuk), dispatch, grounding, zorunlu-opsiyonel yer tutucu ayrımı, bağlam budama, direktifin konumu, uyarı desenleri |
-| `test_prompts.py` | dil çözümleme önceliği (`en`/`tr`/`auto`/`None`), direktif maddeleri, sistem promptunun dil cümlesi, **eval varsayılanının değişmediği**, locale-bağımsız tarih |
-| `test_tools.py` | registry sözleşmesi, şema doğrulama (enum, bool tuzağı), `dispatch` asla exception atmaz, `calculate` güvenliği (`eval()` yok), locale-bağımsız gün adı, arama yardımcıları |
-| `test_grammar.py` | kökün düz cevaba ve çoklu çağrıya izin vermesi, `prose`'un `<` kabul etmesi, çağrı yerinin tool demetinden üretim, tanımsız kural yokluğu, `tool_call.gbnf` sapması |
+| file | covers |
+|:--|:--|
+| `test_orchestrator.py` | call parsing (single, multiple, malformed), dispatch, argument grounding, the required-vs-optional placeholder split, context pruning, directive placement, advisory warnings |
+| `test_tools.py` | registry contract, schema validation, `dispatch` never raises, `calculate` safety (no `eval()`), locale-independent weekday, page extraction (content, not navigation menus) |
+| `test_profile.py` | `/remember`: whose voice a fact is in, per-line labelling, the profile living in the prefix rather than the directive, and storage that never truncates the file |
+| `test_prompts.py` | language resolution precedence (`en`/`tr`/`auto`/`None`), directive clauses, the system prompt's language clause, **the eval default staying byte-identical**, locale-independent dates |
+| `test_grammar.py` | the root allowing prose and repeated calls, `prose` accepting `<`, generation from the call site's tool bundle, no undefined rules, snapshot drift |
 
-## Kurallar
+## Rules
 
-- **Ağ yok.** `get_weather` yalnızca HTTP'den **önce** dönen dallarda test edilir
-  (`days_ahead=99`, geçersiz tip). `google_search` yalnızca saf yardımcılarıyla.
-  Ağ isteyen bir test CI'da atlanır ve hiçbir şeyi korumaz.
-- **Model yok.** `FakeModel` senaryolanmış üretimleri tekrar oynatır; döngü
-  gerçekten koşar, model koşmaz.
-- Her testin adı neyi koruduğunu söyler; gerekçe docstring'de.
+- **No network.** `get_weather` is tested only on the branches that return *before* any HTTP request
+  (`days_ahead=99`, a bad type). `google_search` only through its pure helpers. A test that needs the
+  network is skipped in CI and protects nothing.
+- **No model.** `FakeModel` replays scripted generations: the loop really runs, the model does not.
+- **Multi-turn where it matters.** A change that touches an observation is tested across several turns —
+  a single-turn test once passed while the agent had stopped searching entirely.
+- Every test name says what it protects; the reason lives in the docstring.
 
-## `tool_call.gbnf` başarısız olursa
+## If `test_grammar` fails
 
-Anlık görüntü registry'den geri kalmıştır:
+The `tool_call.gbnf` snapshot has fallen behind the registry:
 
 ```bash
 python inference/grammar/generate_gbnf.py

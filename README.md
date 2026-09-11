@@ -13,8 +13,8 @@
   <img src="https://img.shields.io/badge/runtime-llama.cpp%20Vulkan-brightgreen?style=flat-square" alt="runtime">
   <img src="https://img.shields.io/badge/VRAM-5.0%20%2F%208%20GB-success?style=flat-square" alt="vram">
   <img src="https://img.shields.io/badge/inference%20deps-stdlib%20only-lightgrey?style=flat-square" alt="dependencies">
-  <img src="https://img.shields.io/badge/tools-4-blueviolet?style=flat-square" alt="tools">
-  <img src="https://img.shields.io/badge/tests-89%20passing-success?style=flat-square" alt="tests">
+  <img src="https://img.shields.io/badge/tools-5-blueviolet?style=flat-square" alt="tools">
+  <img src="https://img.shields.io/badge/tests-114%20passing-success?style=flat-square" alt="tests">
   <img src="https://img.shields.io/badge/decoding-GBNF%20constrained-informational?style=flat-square" alt="decoding">
   <img src="https://img.shields.io/badge/output-English%20(Turkish%20pinned%20off)-important?style=flat-square" alt="language">
 </p>
@@ -45,9 +45,9 @@
 | | | |
 |:--|:--|:--|
 | [🎯 **The question**](#-the-question)<br><sub>what this project actually asks</sub> | [⚡ **Quick start**](#-quick-start)<br><sub>two terminals, no build step</sub> | [🔄 **How a turn works**](#-how-a-turn-works)<br><sub>the ReAct loop, drawn</sub> |
-| [🧩 **Design decisions**](#-key-design-decisions)<br><sub>the five that shaped everything</sub> | [🧰 **Tools**](#-tools)<br><sub>four, one registry</sub> | [📊 **Evaluation**](#-evaluation)<br><sub>86 records, full breakdown</sub> |
-| [🔬 **What measurement changed**](#-what-measurement-changed)<br><sub>nine failures, traced and fixed</sub> | [🏗️ **Architecture**](#-architecture)<br><sub>file map</sub> | [💻 **Hardware**](#-hardware)<br><sub>where each stage runs</sub> |
-| [📦 **Setup**](#-setup)<br><sub>install + search key</sub> | [🚦 **Status**](#-status)<br><sub>what is done, what cannot be</sub> | [🛠️ **Commands**](#️-commands)<br><sub>copy-paste reference</sub> |
+| [🧩 **Design decisions**](#-key-design-decisions)<br><sub>the five that shaped everything</sub> | [🧰 **Tools**](#-tools)<br><sub>five, one registry</sub> | [🧠 **Memory**](#-memory)<br><sub>what it keeps, and where</sub> |
+| [📊 **Evaluation**](#-evaluation)<br><sub>86 records, full breakdown</sub> | [🔬 **What measurement changed**](#-what-measurement-changed)<br><sub>failures traced and fixed</sub> | [🏗️ **Architecture**](#-architecture)<br><sub>file map</sub> |
+| [💻 **Hardware**](#-hardware)<br><sub>where each stage runs</sub> | [📦 **Setup**](#-setup)<br><sub>install + search key</sub> | [🚦 **Status**](#-status)<br><sub>what is done, what cannot be</sub> |
 
 ---
 
@@ -79,6 +79,13 @@ LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH ./llama-server \
 python inference/orchestrator.py --verbose
 ```
 
+Or skip step 1 — `bin/agent` starts the server if it is not already up, then connects:
+
+```bash
+agent --verbose      # chat (starts llama-server on demand)
+agent --stop         # shut the server down, reclaim the VRAM
+```
+
 ```console
 you > How will the weather be today in Elazig, Turkey? Then tell me what 4 - 5 is.
   · 2 calls in one generation
@@ -97,6 +104,7 @@ agent> The current temperature in Elazig, Turkey is 28.8 degrees Celsius under c
 | `--variant {V0..V3}` | pick a system prompt variant |
 | `--no-grammar` | turn off constrained decoding (on by default) |
 | `--no-stream` | wait for the whole answer instead of streaming it as it is written |
+| `--no-history` | do not restore or record the conversation across runs |
 
 </div>
 
@@ -181,10 +189,54 @@ Four things in that picture are the result of measurement rather than design:
 | 🌤️ `get_weather` | Current + forecast | `days_ahead` (0–7). Resolves diacritic-free city names (`Elazig` → `Elâzığ`) and prefers the most populous match. Forecast and "now" return **different shapes** on purpose. |
 | 🕐 `get_system_time` | Date and time | IANA timezone inference from a city name. Weekday comes from an explicit table — `strftime("%A")` follows the OS locale. |
 | 🧮 `calculate` | Arithmetic | AST-based, **never `eval()`**. Takes a `unit` so a bare number cannot pass as an answer. |
+| 📓 `search_notes` | The user's own notes | Keyword search over a local folder. One shot, no follow-up: the model cannot search, look, then read, so a hit returns a passage wide enough to answer from. |
 
 `tools/__init__.py` is the hub: the system prompt, the grammar and the dispatcher all read the same
 registry, so one can never be updated while another is forgotten. Adding a tool is one file plus one list
 entry — the grammar regenerates itself.
+
+---
+
+## 🧠 Memory
+
+The agent remembers two different things, and keeps them apart on purpose.
+
+| | | |
+|:--|:--|:--|
+| 🗂️ **Conversation** | `session.jsonl` | The archive holds everything; only the last 8 **user turns and answers** come back. Observations and the tool calls that produced them are dropped — yesterday's search result costs its tokens on every turn and invites answering from a stale source. |
+| 📌 **Profile** | `profile.txt` | Durable facts, one per line, plain text, hand-editable. Written by `/remember`, **never by the model.** |
+
+```console
+you > /remember my name is Berhak
+remembered (1 fact)
+you > /remember your name is NEXUS
+remembered (2 facts)
+you > what is your name?
+agent> My name is NEXUS.
+you > what is my name?
+agent> Your name is Berhak.
+```
+
+Two findings made that transcript work, and neither was obvious.
+
+**Whose voice is a stored fact in?** A fact is saved exactly as the user typed it — in a voice that
+*addresses* the assistant. Replayed inside a system turn it is read in the assistant's voice, and both
+pronouns change owner: `"my name is Berhak"` became the model's own name, `"your name is NEXUS"` became the
+user's. Each line is now quoted and labelled with who it is about, which took the four questions above from
+**18/32 to 31/32**. Rewriting the pronouns instead was tried and *inverted* the answers — in a system turn,
+"Your name is X" is the conventional way to name the **assistant**.
+
+**Where the facts sit matters more than what they say.** They used to be rendered beside the last-moment
+directive — the strongest position in the prompt. A standing list of facts there competes with the
+question: asked for the latest Python version, the model opened with an iPhone answer from three turns
+earlier. Moving the facts into the cached system prompt stops that — **5/6 turns leaked before, 0/6 after** —
+while the memory keeps working, **32/32** on the four questions above. Background belongs where background
+lives.
+
+> [!NOTE]
+> A `remember` tool was considered and rejected. The model over-triggers tools at **71:1** and fabricates on
+> empty results — and a wrong fact in the cached prefix does not spoil one answer, it spoils **every**
+> later turn. Whoever decides what is durable has to be reliable, so it is the user.
 
 ---
 
@@ -196,7 +248,10 @@ rewritten. Every tool name claimed as "unseen" was checked against all **2,985**
 training data; intuitive picks like `convert_currency`, `translate_text` and `find_restaurants` turned out
 to be present and were replaced.
 
-Scored on the full set with the **grammar on**, which is how the agent runs:
+The set is written against **Turkish** final answers, because that is what the fine-tune was for. Production
+is pinned to English while the baseline is measured (see the note at the top) — the two settings are
+independent, and the eval deliberately measures the model's own tendency rather than the agent's configured
+one. Scored on the full set with the **grammar on**, which is how the agent runs:
 
 | Metric | Score | |
 |:--|--:|:--|
@@ -204,12 +259,18 @@ Scored on the full set with the **grammar on**, which is how the agent runs:
 | 🔑 Seen tool schemas | 48 / 56 | `████████░░ 85%` |
 | ✅ JSON validity | 57 / 57 | `██████████ 100%` |
 | 🧮 Arithmetic routed to a tool | 5 / 5 | `██████████ 100%` |
-| 🗣️ Turkish final turn after an observation | 6 / 6 | `██████████ 100%` |
+| 🗣️ Correct final turn after an observation | 6 / 6 | `██████████ 100%` |
 | 🎓 Unseen-schema calls built correctly | 11 / 11 | `██████████ 100%` |
 | 🧵 **Overall** | **72 / 82** | `█████████░ 87%` |
 
 > **The first two rows are the whole point.** Near-equal performance on schemas the model has never seen
 > means it learned *"read the schema, build the call"* rather than memorizing tool names.
+
+> [!WARNING]
+> **These numbers predate the fifth tool.** Adding `search_notes` grew the system prompt by ~120 tokens,
+> which changes the cached prefix every record is scored against, and `google_search` changed how it reads a
+> page in the same period. The set has **not** been re-scored since. They are the honest baseline to compare
+> against, not a verified current reading — and saying so is cheaper than quietly reporting a stale figure.
 
 <details>
 <summary><b>📋 Full category breakdown</b></summary>
@@ -495,7 +556,7 @@ one that iterated the characters of a string, the guard that refused correct
 arithmetic, the rule above — **all harness, all looked like the model failing.**
 
 `eval/` cannot see any of them: it scores generations, not the code around them.
-So `tests/` now covers the code around them — **89 tests, no server, no network,
+So `tests/` now covers the code around them — **114 tests, no server, no network,
 0.01 seconds.** Every one pins a bug that shipped at least once.
 
 It earned its place while being written: `FakeModel` accepted the streaming
@@ -550,21 +611,23 @@ inference/
   prompts.py                # System prompt, variants, language clauses, directive
   serve.py                  # HTTP client to llama-server (model access layer)
   orchestrator.py           # ReAct loop: parsing, grounding, pruning, limits
+  session.py                # Conversation archive + /remember profile (on disk)
   grammar/generate_gbnf.py  # GBNF generated from the live tool registry
-  tools/                    # Registry + google_search, get_weather,
-                            #            get_system_time, calculate
+  tools/                    # Registry + google_search, get_weather, get_system_time,
+                            #            calculate, search_notes
+
+bin/agent                   # Launcher - starts llama-server on demand, leaves it up
 
 eval/
   test_set.jsonl            # 86-record held-out set, 26 of them on unseen schemas
-  test_set_SEMA.md          # Record schema and scoring rules
   validate_test_set.py      # Structural checks - run after every edit
   eval_post_quant.py        # Scores the quantized model against the set
-  eval_pre_quant.py         # bfloat16 baseline (not run - see Status)
 
-tests/                      # 89 harness tests - no server, no network, 0.01s
+tests/                      # 114 harness tests - no server, no network, 0.01s
   test_orchestrator.py      # parsing, dispatch, grounding, pruning, streaming
   test_prompts.py           # language resolution, directive, prompt assembly
-  test_tools.py             # registry contract, schema validation, tool safety
+  test_tools.py             # registry contract, schema validation, page extraction
+  test_profile.py           # /remember: attribution, rendering, storage
   test_grammar.py           # GBNF generation and the traps it has sprung
 ```
 
@@ -648,14 +711,16 @@ Adding another provider means writing **one function** and listing it in `PROVID
 | Dataset preparation (Hermes + Turkish subset) | ✅ Done |
 | QLoRA training script | ✅ Done |
 | LoRA merge / GGUF quantization pipeline | ✅ Done, validated end-to-end |
-| Tool layer + registry (4 tools) | ✅ Done |
+| Tool layer + registry (5 tools) | ✅ Done |
 | Arithmetic tool (`calculate`) | ✅ Done *(units partly solved)* |
 | GBNF grammar generation | ✅ Done *(on by default)* |
 | Inference server & ReAct orchestrator | ✅ Done |
 | Multi-call dispatch | ✅ Done *(was silently dropping calls)* |
 | Evaluation harness (86 records) | ✅ Done |
-| Harness test suite (89 tests) | ✅ Done *(no server, no network)* |
+| Harness test suite (114 tests) | ✅ Done *(no server, no network)* |
 | Streaming output + timing readout | ✅ Done |
+| Persistent memory (`/remember` + session history) | ✅ Done |
+| One-command launcher (`bin/agent`) | ✅ Done |
 | Turkish output | ⏸️ **Pinned off** — English baseline first |
 | Sequential call after an observation | ⛔ **Not reachable** — zero training support |
 | bfloat16 baseline comparison | ❌ **Not possible** — the merged bf16 model was deleted by the quantize pipeline before a baseline was taken |
@@ -672,7 +737,10 @@ Adding another provider means writing **one function** and listing it in `PROVID
 | 🔴 | **Fabrication on unknown terms** | `I06` and `N04` still invent confident explanations for things that do not exist. No automatic metric sees it. |
 | 🔴 | **Factual accuracy is not measured** | The test set asks *did it call a tool* and *was the language right*, never *was the answer true*. |
 | 🟡 | **Side instructions get dropped** | *"in simple terms"* → jargon. A coverage clause was added to the directive; the tone/count side is still unmeasured. |
+| 🔴 | **No hour dial on the weather tool** | *"tomorrow at 8 AM, 12 PM and 6 PM"* has one enumerable parameter and three sub-requests, so the model turned `days_ahead` to 1, 2, 3 and relabelled **three days** as three clock times — "rain showers at 6 PM" was the day after next. The provider serves hourly data; the schema does not expose it. Fix designed, deferred. |
+| 🔴 | **Local questions get foreign sources** | *"RTX 4060 prices in Turkey"* returns US and UK sites, and the model presents dollar figures as Turkish prices in 12 of 12 runs. Three interventions downstream of the query were measured and all three did nothing — the lever is the query itself. |
 | ⚪ | **`days_ahead` drops in Turkish** | *"yarın hava nasıl"* silently returns today's data. Dormant while Turkish is off; works in English (`forecast` 5/5). |
+| ⚪ | **Fact labelling is English-only** | `/remember` reads grammatical person from free pronouns; Turkish marks it with a suffix (`adım` = "my name"), so Turkish facts fall back to an unlabelled note. It degrades safely — it declines to guess rather than guessing wrong. |
 
 </details>
 
@@ -682,12 +750,16 @@ Adding another provider means writing **one function** and listing it in `PROVID
 
 ```bash
 python -m unittest discover -s tests -v                  # harness tests (instant)
-python inference/orchestrator.py --verbose               # interactive agent
+agent --verbose                                          # interactive agent (starts the server)
+python inference/orchestrator.py --verbose               # same, if the server is already up
 python eval/eval_post_quant.py --grammar --out r.json    # score against the test set
 python eval/eval_post_quant.py --grammar --only S        # just one category or id prefix
 python eval/validate_test_set.py                         # check the test set itself
 python inference/grammar/generate_gbnf.py                # inspect the generated grammar
 ```
+
+Inside the REPL: `/reset` clears the history · `/remember <fact>`, `/forget <n>` and `/memory` manage what
+is remembered.
 
 Training and merge/quantize scripts run independently — see the comment block at the top of each script for
 hardware assumptions and expected runtimes.
